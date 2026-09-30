@@ -66,16 +66,48 @@ YELLOW = "\033[33m"
 RESET = "\033[0m"
 
 
+_QUESTION_ITEM_RE = re.compile(r"^(\d+)[\.\)]\s+(.*\S)\s*$")
+
+#: Lines that end an item rather than continuing it.
+_QUESTION_BREAK_RE = re.compile(r"^\s*(?:[-*>]\s|#{1,6}\s|\d+[\.\)]\s)")
+
+
 def load_questions() -> list[str]:
+    """Read the numbered questions, joining wrapped continuation lines.
+
+    The question file is prose markdown, so every one of the ten questions wraps
+    onto a second indented line. Reading one line per item silently truncated
+    all ten - "Compare UAVs and UGVs as presented in the" - so the model was
+    answering fragments and the scores described the wrong task. Continuation is
+    any indented, non-blank line that does not itself start a new item, list
+    bullet, heading or blockquote (the notes under question 10 must not be
+    swallowed).
+    """
     if not QUESTION_FILE.is_file():
         return []
-    text = QUESTION_FILE.read_text(encoding="utf-8")
+
     questions: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        match = re.match(r"^\d+[\.\)]\s+(.*\S)\s*$", stripped)
-        if match:
-            questions.append(match.group(1).strip())
+    current: list[str] = []
+
+    def flush() -> None:
+        if current:
+            questions.append(" ".join(current).strip())
+            current.clear()
+
+    for raw in QUESTION_FILE.read_text(encoding="utf-8").splitlines():
+        item = _QUESTION_ITEM_RE.match(raw.strip())
+        if item:
+            flush()
+            current.append(item.group(2).strip())
+            continue
+        if not current:
+            continue
+        # A blank line or a new block ends the item - but only after recording it.
+        if not raw.strip() or _QUESTION_BREAK_RE.match(raw):
+            flush()
+        elif raw[:1].isspace():
+            current.append(raw.strip())
+    flush()
     return questions
 
 
