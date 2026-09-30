@@ -1,0 +1,35 @@
+{
+  "retrieved": "2026-09-28",
+  "documents": [
+    {
+      "file": "unmanned-aerial-vehicle-overview.pdf",
+      "title": "Unmanned aerial vehicle",
+      "source": "Wikipedia (Wikimedia Foundation)",
+      "date": "2026-09-28",
+      "date_note": "retrieved date; Wikipedia pages are continuously updated",
+      "pages": 50,
+      "url": "https://en.wikipedia.org/wiki/Unmanned_aerial_vehicle",
+      "license": "CC BY-SA 4.0 (Wikipedia text, rendered to PDF)"
+    },
+    {
+      "file": "defence-electronics-electronic-warfare.pdf",
+      "title": "Electronic warfare",
+      "source": "Wikipedia (Wikimedia Foundation)",
+      "date": "2026-09-28",
+      "date_note": "retrieved date; Wikipedia pages are continuously updated",
+      "pages": 12,
+      "url": "https://en.wikipedia.org/wiki/Electronic_warfare",
+      "license": "CC BY-SA 4.0 (Wikipedia text, rendered to PDF)"
+    },
+    {
+      "file": "autonomous-systems-unmanned-ground-vehicle.pdf",
+      "title": "Unmanned ground vehicle",
+      "source": "Wikipedia (Wikimedia Foundation)",
+      "date": "2026-09-28",
+      "date_note": "retrieved date; Wikipedia pages are continuously updated",
+      "pages": 15,
+      "url": "https://en.wikipedia.org/wiki/Unmanned_ground_vehicle",
+      "license": "CC BY-SA 4.0 (Wikipedia text, rendered to PDF)"
+    }
+  ]
+}
