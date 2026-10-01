@@ -58,6 +58,18 @@ class BaseEmbedder(Embeddings):
     def embed_query(self, text: str) -> list[float]:  # noqa: D102
         return self._embed_one(text)
 
+    @property
+    def dimensions(self) -> int:
+        """Width of the vectors this embedder returns.
+
+        Part of the embedder interface so callers can introspect the dimension
+        without branching on which backend is active. It used to exist only on
+        the hashing backend, which meant code doing the generic thing -
+        ``embedder.dimensions`` - raised AttributeError under the default
+        semantic backend.
+        """
+        raise NotImplementedError
+
     def _embed_one(self, text: str) -> list[float]:  # pragma: no cover - abstract
         raise NotImplementedError
 
@@ -114,6 +126,13 @@ class SentenceTransformerEmbedder(BaseEmbedder):
                 ) from exc
         return self._model
 
+    @property
+    def dimensions(self) -> int:
+        """Vector width, from the dimension resolved when the model loaded."""
+        self._ensure_loaded()
+        assert self._dimension is not None  # set by _ensure_loaded
+        return self._dimension
+
     def _embed_one(self, text: str) -> list[float]:
         model = self._ensure_loaded()
         # Always pass a list. sentence-transformers 6.x may return a 2-D
@@ -152,8 +171,13 @@ class HashingEmbedder(BaseEmbedder):
     is_semantic = False
 
     def __init__(self, dimensions: int = _HASH_DIMENSIONS) -> None:
-        self.dimensions = dimensions
-        self._dimension = dimensions
+        # Stored privately because `dimensions` is a read-only property on
+        # BaseEmbedder, so the whole embedder interface shares one accessor.
+        self._dimensions = dimensions
+
+    @property
+    def dimensions(self) -> int:
+        return self._dimensions
 
     def _embed_one(self, text: str) -> list[float]:
         tokens = tokenize(text)

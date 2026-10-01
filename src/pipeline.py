@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Lock
 from typing import Sequence
 
 from .chunker import Chunker
@@ -18,6 +19,7 @@ from .config import Settings, get_settings
 from .embeddings import get_embedder
 from .errors import (
     AstraIntelError,
+    DocumentError,
     DuplicateDocumentError,
     NoDocumentsError,
 )
@@ -65,6 +67,7 @@ class AstraPipeline:
         self._loaded = False
         self._llm = None
         self._llm_failed_until: float | None = None
+        self._llm_lock = Lock()
 
     def llm(self):
         """Return a cached LLM client, building it on first use.
@@ -80,28 +83,40 @@ class AstraPipeline:
         own without a restart, while a genuine misconfiguration is not retried
         on every single question. Pass an explicit client to ``answerer()`` to
         override.
-        """
-        if self._llm is not None:
-            return self._llm
-        if self._llm_failed_until is not None:
-            if time.monotonic() < self._llm_failed_until:
-                return None
-            logger.info("Retrying the language model after its cooldown expired.")
-            self._llm_failed_until = None
-        try:
-            from .llm import build_llm_client
 
-            self._llm = build_llm_client(self.settings)
-            self._llm_failed_until = None
-        except Exception as exc:  # noqa: BLE001 - degrade, never crash the UI
-            self._llm_failed_until = time.monotonic() + LLM_RETRY_COOLDOWN_S
-            logger.warning(
-                "LLM unavailable (%s); answers will be evidence-only for %.0fs.",
-                exc,
-                LLM_RETRY_COOLDOWN_S,
-            )
-            self._llm = None
-        return self._llm
+        Building is guarded by a lock because the API serves requests on a
+        thread pool: without it a burst of concurrent questions each opens its
+        own client (and each retries a provider that is already known to be
+        down), and a single successful build could be discarded by a slower
+        failing sibling.
+        """
+        client = self._llm
+        if client is not None:
+            return client
+        with self._llm_lock:
+            if self._llm is not None:
+                return self._llm
+            if self._llm_failed_until is not None:
+                if time.monotonic() < self._llm_failed_until:
+                    return None
+                logger.info(
+                    "Retrying the language model after its cooldown expired."
+                )
+                self._llm_failed_until = None
+            try:
+                from .llm import build_llm_client
+
+                self._llm = build_llm_client(self.settings)
+                self._llm_failed_until = None
+            except Exception as exc:  # noqa: BLE001 - degrade, never crash the UI
+                self._llm_failed_until = time.monotonic() + LLM_RETRY_COOLDOWN_S
+                logger.warning(
+                    "LLM unavailable (%s); answers will be evidence-only for %.0fs.",
+                    exc,
+                    LLM_RETRY_COOLDOWN_S,
+                )
+                self._llm = None
+            return self._llm
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -175,7 +190,13 @@ class AstraPipeline:
                 result.failures[filename] = exc.user_message
                 logger.warning("Could not ingest %s: %s", filename, exc)
             except Exception as exc:  # noqa: BLE001 - one bad file must not stop the batch
-                result.failures[filename] = f"Unexpected error: {exc}"
+                # Not surfaced verbatim: this text reaches the client through
+                # the raised AstraIntelError, and an unexpected exception can
+                # carry paths or provider internals.
+                result.failures[filename] = (
+                    f"{filename} could not be read. Check it is a valid, "
+                    "unencrypted PDF."
+                )
                 logger.exception("Unexpected failure ingesting %s", filename)
 
         if new_chunks:
@@ -189,7 +210,19 @@ class AstraPipeline:
         # failure buried in the payload, so the console reported a cheerful
         # "Indexed 0 new documents" and the broken PDF vanished silently.
         if result.failures:
-            raise AstraIntelError("; ".join(result.failures.values()))
+            # The values are already the curated `user_message` of each
+            # per-file error (never a traceback), so joining them is safe to
+            # render. Raising the bare `AstraIntelError` here discarded them
+            # in favour of the generic base-class fallback, so a corrupt PDF
+            # surfaced as "Something went wrong" instead of naming the file
+            # and saying it could not be read.
+            detail = "; ".join(
+                f"{name}: {reason}" for name, reason in sorted(result.failures.items())
+            )
+            raise DocumentError(
+                f"Some files could not be indexed: {detail}",
+                user_message=f"Some files could not be indexed. {detail}",
+            )
 
         self._build_retriever()
         result.chunk_count = self.store.chunk_count
@@ -230,6 +263,20 @@ class AstraPipeline:
 
     def documents(self) -> list[DocumentMeta]:
         return self.store.load_documents()
+
+    def page_histograms(self) -> dict[str, dict[int, int]]:
+        """Passage counts per page, keyed by document id.
+
+        One pass over the corpus for all documents. Computing this per
+        document instead means each document copies the entire chunk map, so
+        the cost was O(documents x corpus) - fine at three documents, not at a
+        few hundred.
+        """
+        histograms: dict[str, dict[int, int]] = {}
+        for chunk in self.store.all_chunks():
+            pages = histograms.setdefault(chunk.document_id, {})
+            pages[chunk.page] = pages.get(chunk.page, 0) + 1
+        return histograms
 
     def chunks_for(self, document_id: str) -> list[Chunk]:
         return [

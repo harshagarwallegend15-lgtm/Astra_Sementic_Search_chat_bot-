@@ -1,4 +1,4 @@
-﻿"""ASTRA INTEL - HTTP API and static frontend host.
+"""ASTRA INTEL - HTTP API and static frontend host.
 
 The RAG pipeline never imported Streamlit, so it can be served over plain HTTP
 instead. This module exposes exactly the operations ``app.py`` wired to widgets -
@@ -28,7 +28,9 @@ from typing import Any
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
+from starlette.concurrency import run_in_threadpool
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -67,6 +69,23 @@ class QuestionIn(BaseModel):
         if not cleaned:
             raise ValueError("question must not be blank")
         return cleaned
+
+
+def _internal_failure(action: str, exc: BaseException) -> HTTPException:
+    """Build a 500 that is safe to return to a client.
+
+    ``str(exc)`` is deliberately not forwarded. These handlers catch bare
+    ``Exception``, so the stringification can carry provider request metadata,
+    filesystem paths, ``KeyError('api_key')`` and similar internals. The real
+    cause is logged with a traceback server-side and correlated to the client
+    by an id, so a report can still be matched to a log line.
+    """
+    ref = uuid.uuid4().hex[:12]
+    logger.exception("%s failed (ref=%s)", action, ref)
+    return HTTPException(
+        status_code=500,
+        detail=f"{action} failed. Reference: {ref}",
+    )
 
 
 def _as_dict(value: Any) -> Any:
@@ -197,15 +216,15 @@ def _state() -> dict[str, Any]:
     # Per-page passage counts, so the console can draw the corpus grid (the
     # waste-dashboard "map" analogue: where in the corpus the material sits).
     # Computed here rather than in the browser because the store is the only
-    # thing that knows the real distribution.
+    # thing that knows the real distribution, and in one pass because a
+    # per-document query would rescan the whole corpus per document.
+    histograms = pipeline.page_histograms()
     register: list[dict[str, Any]] = []
     for meta in documents:
-        histogram: dict[int, int] = {}
-        for chunk in pipeline.chunks_for(meta.document_id):
-            histogram[chunk.page] = histogram.get(chunk.page, 0) + 1
+        histogram = histograms.get(meta.document_id, {})
         entry = _as_dict(meta)
         entry["pages"] = [
-            {"page": page, "passages": histogram[page]}
+            {"page": page, "passages": histogram.get(page, 0)}
             for page in range(1, (meta.page_count or 0) + 1)
         ]
         entry["indexed_pages"] = len(histogram)
@@ -214,7 +233,19 @@ def _state() -> dict[str, Any]:
     return {
         "stats": _as_dict(pipeline.stats()),
         "documents": register,
+        # `settings` is the human-readable dump (labels like "LLM model") meant
+        # for display. `runtime` is the same information under stable
+        # snake_case keys for programmatic use, so the console never has to
+        # match on a display string. Neither block carries the API key:
+        # public_dict reports only whether one is configured.
         "settings": settings.public_dict(),
+        "runtime": {
+            "llm_provider": settings.llm_provider,
+            "llm_model": settings.llm_model,
+            "llm_base_url": settings.resolved_base_url,
+            "embedding_model": settings.embedding_model,
+            "llm_ready": llm is not None,
+        },
         "llm_ready": llm is not None,
     }
 
@@ -232,8 +263,7 @@ def ask(payload: QuestionIn) -> dict[str, Any]:
     except AstraIntelError as exc:
         raise HTTPException(status_code=400, detail=exc.user_message) from exc
     except Exception as exc:  # noqa: BLE001 - never leak a traceback to the client
-        logger.exception("answer failed")
-        raise HTTPException(status_code=500, detail=f"Could not answer: {exc}") from exc
+        raise _internal_failure("Answering the question", exc) from exc
     return _as_dict(result)
 
 
@@ -245,51 +275,140 @@ def evidence(payload: QuestionIn) -> dict[str, Any]:
     except AstraIntelError as exc:
         raise HTTPException(status_code=400, detail=exc.user_message) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("evidence failed")
-        raise HTTPException(status_code=500, detail=f"Retrieval failed: {exc}") from exc
+        raise _internal_failure("Retrieving evidence", exc) from exc
     return {"question": payload.question, "citations": _as_dict(citations)}
+
+
+# Upload guardrails. Both limits are enforced while the body is still being
+# read, not after it has been buffered into memory.
+MAX_UPLOAD_FILES = 20
+CHUNK_BYTES = 1024 * 1024
+
+
+async def _close_files(files: list[UploadFile]) -> None:
+    """Release every uploaded file's spool handle, ignoring cleanup errors."""
+    for item in files:
+        try:
+            await item.close()
+        except Exception:  # noqa: BLE001 - cleanup must not mask the real error
+            pass
 
 
 @app.post("/api/upload")
 async def upload(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    """Ingest PDFs.
+
+    Declared ``async`` because the files must be streamed. The blocking work
+    (PDF extraction, embedding, FAISS build, save) is handed to a thread so it
+    cannot stall the event loop and with it every other request; when that
+    used to run inline in the coroutine, /api/health stalled for the whole
+    duration of an ingest.
+    """
+    if len(files) > MAX_UPLOAD_FILES:
+        # Reject before touching the body, but the files Starlette already
+        # spooled still hold open handles, so close them.
+        await _close_files(files)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files: {len(files)}. Upload at most {MAX_UPLOAD_FILES} at once.",
+        )
+
+    limit = get_settings().max_upload_mb * 1024 * 1024
     payload: list[tuple[str, bytes]] = []
-    for item in files:
-        payload.append((item.filename or "upload.pdf", await item.read()))
+    total = 0
+    try:
+        for item in files:
+            name = item.filename or "upload.pdf"
+            buffer = bytearray()
+            while True:
+                block = await item.read(CHUNK_BYTES)
+                if not block:
+                    break
+                total += len(block)
+                if total > limit:
+                    # Stop early rather than after the whole body is resident.
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"Upload exceeds the {get_settings().max_upload_mb} MB limit. "
+                            "Split the batch and retry."
+                        ),
+                    )
+                buffer.extend(block)
+            payload.append((name, bytes(buffer)))
+    except HTTPException:
+        # Every UploadFile spools to a temp file; abandoning them without
+        # closing leaks a handle per file and, on Windows, can leave the
+        # %TEMP% artefact locked until the garbage collector runs.
+        await _close_files(files)
+        raise
+
     if not payload:
         raise HTTPException(status_code=400, detail="No files were uploaded.")
+
     pipeline = get_pipeline()
     try:
-        result = pipeline.ingest_pdfs(payload)
+        result = await run_in_threadpool(pipeline.ingest_pdfs, payload)
     except AstraIntelError as exc:
         raise HTTPException(status_code=400, detail=exc.user_message) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("ingest failed")
-        raise HTTPException(status_code=500, detail=f"Could not index those files: {exc}") from exc
+        raise _internal_failure("Indexing those files", exc) from exc
     return _as_dict(result)
 
 
 @app.post("/api/rebuild")
-def rebuild() -> dict[str, Any]:
+def rebuild(confirm: str = "") -> dict[str, Any]:
+    # Destructive: this discards every user-uploaded document along with the
+    # starter set. Requiring the confirmation token server-side means the
+    # control cannot be triggered by a stray request, a prefetch, or a
+    # bookmarked GET.
+    if confirm != "rebuild":
+        raise HTTPException(
+            status_code=400,
+            detail="Rebuilding discards every indexed document. Pass confirm=rebuild.",
+        )
     pipeline = get_pipeline()
     try:
         result = pipeline.index_starter_documents(rebuild=True)
     except AstraIntelError as exc:
         raise HTTPException(status_code=400, detail=exc.user_message) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("rebuild failed")
-        raise HTTPException(status_code=500, detail=f"Could not rebuild: {exc}") from exc
+        raise _internal_failure("Rebuilding the index", exc) from exc
     return _as_dict(result)
 
 
 @app.post("/api/clear")
-def clear() -> dict[str, Any]:
-    get_pipeline().clear_index()
+def clear(confirm: str = "") -> dict[str, Any]:
+    if confirm != "clear":
+        raise HTTPException(
+            status_code=400,
+            detail="Clearing destroys the entire index. Pass confirm=clear.",
+        )
+    try:
+        get_pipeline().clear_index()
+    except AstraIntelError as exc:
+        raise HTTPException(status_code=400, detail=exc.user_message) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _internal_failure("Clearing the index", exc) from exc
     return {"ok": True}
 
 
 @app.delete("/api/documents/{document_id}")
 def remove(document_id: str) -> dict[str, Any]:
-    removed = get_pipeline().remove_document(document_id)
+    try:
+        removed = get_pipeline().remove_document(document_id)
+    except AstraIntelError as exc:
+        raise HTTPException(status_code=400, detail=exc.user_message) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _internal_failure(f"Removing document {document_id}", exc) from exc
+    if not removed:
+        # Deleting nothing is a client mistake, not a silent success: the
+        # console refetches the register either way, and a 200 would suggest
+        # the document was removed when it never existed.
+        raise HTTPException(
+            status_code=404,
+            detail=f"No indexed document has the id {document_id!r}.",
+        )
     return {"removed": removed}
 
 
@@ -303,13 +422,69 @@ def briefings() -> dict[str, Any]:
     except AstraIntelError as exc:
         raise HTTPException(status_code=400, detail=exc.user_message) from exc
     except Exception as exc:  # noqa: BLE001
-        logger.exception("briefing failed")
-        raise HTTPException(status_code=500, detail=f"Could not generate briefings: {exc}") from exc
+        raise _internal_failure("Generating briefings", exc) from exc
 
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
-    return {"ok": True}
+    """Report real readiness, not just that the process is alive.
+
+    The old body was ``{"ok": true}``, which stayed green while the index was
+    unreadable and the answer engine dead - the console showed a live system
+    that could not answer a single question. Each dependency is probed and the
+    HTTP status reflects the worst outcome: ``200`` when the service can serve
+    questions, ``503`` when it cannot.
+    """
+    checks: dict[str, Any] = {}
+    degraded: list[str] = []
+
+    try:
+        pipeline = get_pipeline()
+        stats = pipeline.stats()
+        checks["index"] = {
+            "ok": bool(stats.get("chunks")),
+            "chunks": stats.get("chunks", 0),
+            "documents": stats.get("documents", 0),
+            "embedding_model": pipeline.settings.embedding_model,
+        }
+        if not stats.get("chunks"):
+            degraded.append("index")
+    except Exception as exc:  # noqa: BLE001 - a probe must never raise
+        logger.error("Health probe failed on the index: %s", exc)
+        checks["index"] = {"ok": False, "error": type(exc).__name__}
+        degraded.append("index")
+
+    try:
+        pipeline = get_pipeline()
+        llm = pipeline.llm()
+        # `llm()` builds the client but sends nothing, so this proves
+        # configuration and reachability of the SDK, not the provider.
+        checks["llm"] = {
+            "ok": llm is not None,
+            "provider": pipeline.settings.llm_provider,
+            "model": pipeline.settings.llm_model,
+            "detail": None if llm is not None else "client unavailable",
+        }
+        if llm is None:
+            # Answers still work in evidence-only mode, so this is reported
+            # without failing the whole check.
+            checks["llm"]["degraded"] = True
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Health probe failed on the language model: %s", exc)
+        checks["llm"] = {"ok": False, "error": type(exc).__name__, "degraded": True}
+
+    body = {
+        "status": "degraded" if degraded else "ok",
+        "checks": checks,
+        "index_ready": checks["index"].get("ok", False),
+        "llm_ready": checks["llm"].get("ok", False),
+    }
+    if degraded:
+        # JSONResponse rather than HTTPException so the payload keeps the same
+        # shape whether the service is ready or not; a probe should not have to
+        # unwrap `detail` to find out what is broken.
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 @app.get("/api/suggestions")

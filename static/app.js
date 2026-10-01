@@ -14,6 +14,7 @@ const STATUS = {
 const state = {
   documents: [],
   settings: {},
+  runtime: {},
   llmReady: false,
   stats: {},
   log: [],
@@ -301,15 +302,20 @@ function drawOps() {
 
 function drawConfig() {
   $("config-json").textContent = JSON.stringify({
-    settings: state.settings,
-    stats: state.stats,
+    runtime: state.runtime,
     llm_ready: state.llmReady,
+    stats: state.stats,
+    settings: state.settings,
   }, null, 2);
 }
 
 /* Animate a KPI figure from whatever it currently shows to the new value, so a
    refresh reads as the console updating rather than silently swapping digits. */
 const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+// Upper bound on retained query-log rows, so a long session cannot grow the
+// DOM without limit.
+const MAX_LOG_ROWS = 200;
 
 function setNum(id, value) {
   const el = $(id);
@@ -452,6 +458,9 @@ function renderAnswer(payload, question) {
     sources: new Set(citations.map((c) => c.filename)).size,
     latency_ms: payload.latency_ms || 0,
   });
+  // Bounded: an operator session can run for hours, and an unbounded log
+  // grows the DOM on every answer.
+  if (state.log.length > MAX_LOG_ROWS) state.log.length = MAX_LOG_ROWS;
   renderAll();
 }
 
@@ -459,17 +468,22 @@ async function loadState() {
   const data = await api("/api/state");
   state.documents = data.documents || [];
   state.settings = data.settings || {};
+  state.runtime = data.runtime || {};
   state.stats = data.stats || {};
   state.llmReady = !!data.llm_ready;
+
+  // `runtime` carries the snake_case fields; `settings` is display-only and its
+  // keys are human labels ("LLM model"), so it is never read programmatically.
+  const model = state.runtime.llm_model;
 
   const conn = $("conn");
   conn.className = "conn " + (state.llmReady ? "is-live" : "is-off");
   conn.querySelector(".conn-label").textContent = state.llmReady
-    ? (state.settings.llm_model || "model ready")
+    ? (model || "model ready")
     : "no model configured";
 
   $("engine-line").textContent = state.llmReady
-    ? `retrieval + grounded synthesis via ${state.settings.llm_model}`
+    ? `retrieval + grounded synthesis via ${model}`
     : "retrieval only - no language model configured";
 
   renderAll();
@@ -593,7 +607,9 @@ function bind() {
       input.value = "";
       await loadState();
     } catch (err) {
-      note.textContent = "";
+      // A per-file failure surfaces as a 400 now, so it has to be shown: the
+      // previous code reported success here while the broken PDF vanished.
+      note.textContent = err.message;
       toast(err.message, "err");
     }
   };
@@ -601,10 +617,12 @@ function bind() {
   $("btn-refresh").onclick = () => loadState().then(() => toast("State refreshed.")).catch((e) => toast(e.message, "err"));
 
   $("btn-rebuild").onclick = async () => {
-    if (!confirm("Rebuild the index from the starter documents?")) return;
+    if (!confirm(
+      "Rebuilding discards EVERY indexed document, including your uploads, and re-indexes the starter PDFs only.\n\nContinue?"
+    )) return;
     try {
       toast("Rebuilding the index...");
-      const result = await jsonPost("/api/rebuild", {});
+      const result = await jsonPost("/api/rebuild?confirm=rebuild", {});
       toast(`Rebuilt: ${result.chunk_count} passages.`, "ok");
       state.selected = null;
       await loadState();
@@ -614,7 +632,7 @@ function bind() {
   $("btn-clear").onclick = async () => {
     if (!confirm("Clear every document from the index? This cannot be undone.")) return;
     try {
-      await jsonPost("/api/clear", {});
+      await jsonPost("/api/clear?confirm=clear", {});
       state.selected = null;
       toast("Index cleared.", "ok");
       await loadState();

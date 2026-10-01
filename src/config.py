@@ -98,6 +98,10 @@ class Settings:
     llm_temperature: float = 0.0
     llm_max_tokens: int = 900
     llm_timeout: int = 180
+    #: Retries for transient provider faults (429, 502/503/504, socket
+    #: resets). Without this a single rate-limit response aborts the question
+    #: and starts the failure cooldown, so one blip costs the user an answer.
+    llm_max_retries: int = 2
     llm_num_ctx: int = 8192
 
     # -- Embeddings --------------------------------------------------------
@@ -187,6 +191,7 @@ class Settings:
             llm_temperature=_env_float("LLM_TEMPERATURE", 0.0),
             llm_max_tokens=_env_int("LLM_MAX_TOKENS", 900),
             llm_timeout=_env_int("LLM_TIMEOUT", 180),
+llm_max_retries=_env_int("LLM_MAX_RETRIES", 2),
             llm_num_ctx=_env_int("LLM_NUM_CTX", 8192),
             embedding_model=_env("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
             embedding_backend=_env("EMBEDDING_BACKEND", "auto").lower(),

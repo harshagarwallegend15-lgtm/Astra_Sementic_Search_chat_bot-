@@ -131,6 +131,7 @@ class OllamaLLMClient(BaseLLMClient):
             "num_ctx": self.settings.llm_num_ctx,
             "num_predict": self.settings.llm_max_tokens,
             "timeout": self.settings.llm_timeout,
+            "max_retries": self.settings.llm_max_retries,
             "repeat_penalty": 1.1,
         }
         base_url = self.settings.resolved_base_url
@@ -160,6 +161,10 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
             "temperature": self.settings.llm_temperature,
             "max_tokens": self.settings.llm_max_tokens,
             "timeout": self.settings.llm_timeout,
+            # Absorb transient provider faults here rather than letting one
+            # 429/503 abort the question and trip the pipeline's failure
+            # cooldown, which would degrade every later answer too.
+            "max_retries": self.settings.llm_max_retries,
             "api_key": self.settings.llm_api_key or "not-needed",
             # Opt out of transport compression. Providers such as Groq gzip
             # responses, and the installed httpx2 decodes them with

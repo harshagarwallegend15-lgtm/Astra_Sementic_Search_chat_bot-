@@ -146,21 +146,30 @@ class BM25Index:
 
     def ensure(self, chunks: Sequence[Chunk]) -> None:
         """Rebuild the index if the corpus changed."""
-        fingerprint = self._fingerprint_of(chunks)
-        current = self._index
-        if current is not None and current[0] is not None and fingerprint == current[2]:
-            return
-        corpus = [
-            tokenize(f"{chunk.title} {chunk.section or ''} {chunk.text}")
-            for chunk in chunks
-        ]
-        # BM25Okapi fails on an all-empty corpus; guard it.
-        built: BM25Okapi | None = None
-        ids: list[str] = []
-        if any(corpus):
-            built = BM25Okapi(corpus)
-            ids = [chunk.chunk_id for chunk in chunks]
+        # The whole check-build-publish cycle runs under the lock. Locking only
+        # the assignment would still allow two rebuilds to interleave and let
+        # the *slower* one win, publishing an index for a corpus that was
+        # superseded by the time it finished. Readers never block on this lock:
+        # `search` takes one atomic attribute read of `self._index`.
         with self._lock:
+            fingerprint = self._fingerprint_of(chunks)
+            current = self._index
+            if (
+                current is not None
+                and current[0] is not None
+                and fingerprint == current[2]
+            ):
+                return
+            corpus = [
+                tokenize(f"{chunk.title} {chunk.section or ''} {chunk.text}")
+                for chunk in chunks
+            ]
+            # BM25Okapi fails on an all-empty corpus; guard it.
+            built: BM25Okapi | None = None
+            ids: list[str] = []
+            if any(corpus):
+                built = BM25Okapi(corpus)
+                ids = [chunk.chunk_id for chunk in chunks]
             self._index = (built, ids, fingerprint)
         logger.debug("BM25 index rebuilt over %d chunks", len(ids))
 

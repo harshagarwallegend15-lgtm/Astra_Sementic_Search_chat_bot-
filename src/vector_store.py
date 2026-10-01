@@ -433,11 +433,26 @@ class VectorStore:
             return self._read_document_file()
 
     def _remove_disk(self) -> None:
+        """Delete the on-disk index.
+
+        Failures propagate. Swallowing them here lets ``clear()`` report
+        success while ``data/vectorstore`` survives - usually a transient
+        Windows file lock - so the session shows an empty corpus and every
+        document silently reappears on the next start. That is a data-integrity
+        lie, so it is raised instead. In-memory state has already been cleared
+        by the caller, which is recoverable; a resurrected corpus is not.
+        """
         if self.directory.exists():
             try:
                 shutil.rmtree(self.directory)
-            except OSError as exc:  # pragma: no cover - windows file locks
-                logger.warning("Could not remove %s: %s", self.directory, exc)
+            except OSError as exc:
+                logger.error("Could not remove %s: %s", self.directory, exc)
+                raise VectorStoreError(
+                    "The index could not be deleted from disk, so it would "
+                    "reappear on the next start. Close anything holding the "
+                    "files (a running console, an editor or Explorer preview) "
+                    "and try again."
+                ) from exc
 
     # -- diagnostics -------------------------------------------------------
 
