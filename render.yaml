@@ -4,8 +4,10 @@
 # and the health check. Without the disk the FAISS index is rebuilt on every
 # cold start; with it, restarts keep the corpus.
 #
-# Generate a blueprint at https://render.com/ from this repo. The service reads
-# PORT, which Render injects, so nothing here hardcodes a port.
+# Validate with:  render blueprints validate render.yaml
+# or against https://render.com/schema/render.yaml.json
+#
+# The service reads PORT, which Render injects, so nothing here hardcodes one.
 
 services:
   - type: web
@@ -13,13 +15,19 @@ services:
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: starter # persistent disk + always-on; `free` spins down and evicts
+    # 1 CPU / 2 GB. The free tier is 0.1 CPU / 512 MB, which cannot hold torch
+    # plus a loaded MiniLM model and a FAISS index: the container is OOM-killed
+    # during startup, before it can serve anything.
+    plan: 1c-2g
     healthCheckPath: /api/health
-    # First boot has to extract, chunk and embed 3 PDFs while loading MiniLM.
-    # The default 100s window can elapse on a cold container, which Railway and
-    # Render both read as a failed deploy.
-    healthCheckTimeout: 180
-    autoDeploy: true
+    # No healthCheckTimeout field exists. Render probes the path until the
+    # container is listening; a cold start that extracts, chunks and embeds the
+    # starter PDFs just takes longer to get there.
+    autoDeployTrigger: commit
+    # A briefing is a map-reduce over the corpus, several sequential model
+    # calls, and can run for over a minute. The 30s default SIGTERM grace would
+    # kill it mid-request.
+    maxShutdownDelaySeconds: 120
     envVars:
       - key: LLM_PROVIDER
         value: groq
@@ -28,13 +36,16 @@ services:
       - key: LLM_API_KEY
         sync: false # set this in the dashboard; never commit a key
       - key: EMBEDDING_BACKEND
-        value: semantic # fail loudly rather than silently falling back to
-                         # lexical hashing, which would wreck retrieval quality
-      - key: HF_TOKEN
-        sync: false # optional: raises Hugging Face download rate limits
+        # "semantic", not "auto": auto silently falls back to a lexical hashing
+        # embedder when the model cannot load, which returns plausible-looking
+        # but semantically wrong results. Failing loudly is the only safe
+        # default in production.
+        value: semantic
       - key: LOG_LEVEL
         value: INFO
     disk:
       name: astra-data
+      # The FAISS index and uploaded PDFs live here, not in the image. Baking
+      # them in would ship a stale corpus that overwrites the disk.
       mountPath: /app/data
       sizeGB: 1

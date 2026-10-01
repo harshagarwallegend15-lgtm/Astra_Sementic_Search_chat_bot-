@@ -143,8 +143,8 @@ def test_the_api_binds_to_the_injected_port():
 def test_a_render_blueprint_exists_and_uses_a_persistent_disk():
     """Without the disk the index is lost on every restart and re-seeded.
 
-    Render's `free` plan also evicts the filesystem after inactivity, so a
-    `starter` plan (or any always-on instance) is required for a real corpus.
+    Render's `free` plan also evicts the filesystem after inactivity, so a paid
+    plan is required for a real corpus.
     """
     blueprint = PROJECT_ROOT / "render.yaml"
     assert blueprint.is_file(), "render.yaml is missing"
@@ -157,3 +157,18 @@ def test_a_render_blueprint_exists_and_uses_a_persistent_disk():
     )
     # A committed key would be the worst possible outcome of this file.
     assert not re.search(r"gsk_[A-Za-z0-9]{20,}", text)
+
+
+def test_the_blueprint_only_uses_fields_render_actually_accepts():
+    """`healthCheckTimeout` failed the Blueprint; every unknown key costs a
+    deploy cycle. `tests/test_render_blueprint.py` validates against Render's
+    live schema; this is the offline check for the keys that bit us."""
+    text = (PROJECT_ROOT / "render.yaml").read_text(encoding="utf-8")
+    for invented in (
+        "healthCheckTimeout",
+        "startupTimeout",
+        "healthCheckInterval",
+        "healthCheckRetries",
+    ):
+        assert f"{invented}:" not in text, f"{invented} is not a Render field"
+    assert "plan: starter" not in text, "'starter' is not a Render plan id"
