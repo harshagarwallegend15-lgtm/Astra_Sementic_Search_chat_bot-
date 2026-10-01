@@ -58,6 +58,35 @@ def test_both_assets_are_served(client):
         assert client.get(asset).status_code == 200, asset
 
 
+def test_the_shell_is_never_cached_and_points_at_current_assets(client):
+    """A cached shell is indistinguishable from a failed deploy.
+
+    The page used to link bare `/static/styles.css` and `/static/app.js`, so a
+    browser could keep rendering an old background and old frames after the
+    server had already changed them.
+    """
+    response = client.get("/")
+    assert response.status_code == 200
+    cache = response.headers.get("cache-control", "")
+    assert "no-store" in cache, "the console shell can be cached by the browser"
+
+    css_match = re.search(r"/static/styles\.css\?v=([0-9a-f]{8,})", response.text)
+    js_match = re.search(r"/static/app\.js\?v=([0-9a-f]{8,})", response.text)
+    assert css_match, "the stylesheet URL is not content-versioned"
+    assert js_match, "the script URL is not content-versioned"
+    assert "__CSS_VERSION__" not in response.text
+    assert "__JS_VERSION__" not in response.text
+
+    import api
+
+    assert css_match.group(1) == api._asset_version("styles.css")
+    assert js_match.group(1) == api._asset_version("app.js")
+
+    # Query strings must not break the static routes.
+    assert client.get(f"/static/styles.css?v={css_match.group(1)}").status_code == 200
+    assert client.get(f"/static/app.js?v={js_match.group(1)}").status_code == 200
+
+
 def test_every_id_the_script_uses_exists(page):
     """`$(\"id\")` and `getElementById` are the only wiring mechanism used.
 
@@ -449,41 +478,54 @@ def test_backdrop_layers_drift_at_different_speeds():
 
 
 def test_the_backdrop_cannot_compete_with_the_content():
-    """The layers were initially strong enough to show stencilled text through
-    the panels, which fought the copy. Opacity is a legibility budget, not a
-    taste knob.
+    """The background should be unmistakable, but not fight the copy.
+
+    It was first tuned to nearly invisible; then the panels were made opaque
+    enough to carry stronger layers. These bounds preserve both decisions.
     """
     css = (STATIC / "styles.css").read_text(encoding="utf-8")
-    for layer in ("contours", "grid", "sectors", "schematic"):
+    bounds = {
+        "contours": (0.28, 0.36),
+        "grid": (0.14, 0.20),
+        "sectors": (0.22, 0.30),
+        "schematic": (0.14, 0.20),
+    }
+    for layer, (minimum, maximum) in bounds.items():
         rule = css.split(f".map-{layer} {{")[1].split("}")[0]
-        # CSS writes these without a leading zero, so `.15` means 0.15.
+        # CSS writes these without a leading zero, so `.34` means 0.34.
         value = float("0." + re.search(r"opacity:\s*\.(\d+)", rule).group(1))
-        assert value <= 0.20, (
-            f"the {layer} layer sits at {value}, too strong to read behind panels"
+        assert minimum <= value <= maximum, (
+            f"the {layer} layer sits at {value}, outside {minimum}-{maximum}"
         )
 
 
 def test_panels_carry_machined_corner_brackets(page):
-    """A gradient rim lights the whole edge; brackets mark the corners.
+    """A gradient rim lights the whole edge; brackets mark all four corners.
 
-    The corners need to sit *on* the rounded edge, which no border value can
-    do, so they are a pseudo-element on an injected carrier span.
+    Two corners left the other edges visually unresolved. The marks sit on the
+    rounded edge, which no border value can do, so they are injected rather than
+    hand-written.
     """
     assert 'class="panel panel-hero ticked bracket"' in page
     assert page.count("panel bracket") >= 8, "too few panels are bracketed"
 
     script = (STATIC / "app.js").read_text(encoding="utf-8")
-    assert '".bracket-corners"' in script, "the corner carrier is never injected"
+    assert '"corner-tl", "corner-tr", "corner-bl", "corner-br"' in script, (
+        "all four corners are not injected"
+    )
     assert 'aria-hidden", "true"' in script, "decorative corners must be hidden"
 
     css = (STATIC / "styles.css").read_text(encoding="utf-8")
-    # The two rules are written as a shared selector list, so both cuts live in
-    # the block that follows the shared opener.
-    shared = css.split(".panel.bracket > .bracket-corners::before,")[1]
-    assert "border-right: 0" in shared, "the top-left bracket is not cut"
-    assert "border-bottom-right-radius" in shared, "the brackets are not rounded"
-    assert "border-top-left-radius" in shared, "the brackets are not rounded"
-    assert "rimSweep" in css, "the moving rim highlight is missing"
+    for corner in ("corner-tl", "corner-tr", "corner-bl", "corner-br"):
+        assert f".{corner} {{" in css, f"the {corner} style is missing"
+    for radius in (
+        "border-top-left-radius",
+        "border-top-right-radius",
+        "border-bottom-left-radius",
+        "border-bottom-right-radius",
+    ):
+        assert radius in css, "a corner bracket is not rounded"
+    assert ".panel.bracket::after" in css, "the travelling rim highlight is missing"
     assert "@keyframes rimSweep" in css
 
 
@@ -494,7 +536,7 @@ def test_corner_rim_motion_and_backdrop_both_stop_under_reduced_motion():
     assert ".map-layer" in blocks and "animation: none" in blocks, (
         "the drifting backdrop still animates under reduced motion"
     )
-    assert "bracket-corners" in blocks and "animation: none" in blocks, (
+    assert ".panel.bracket::after" in blocks and "animation: none" in blocks, (
         "the moving panel rim still animates under reduced motion"
     )
 

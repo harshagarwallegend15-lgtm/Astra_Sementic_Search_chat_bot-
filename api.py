@@ -18,6 +18,7 @@ or ``python api.py`` for the same thing with reload disabled.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import logging
 import os
 import sys
@@ -28,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
@@ -554,12 +555,40 @@ def suggestions() -> dict[str, Any]:
     return {"questions": found}
 
 
+def _asset_version(filename: str) -> str:
+    """Content hash used to force browsers to refetch changed frontend files.
+
+    A stale stylesheet looks identical to a failed deployment: the user sees
+    the old background and old frames while the server is already serving new
+    ones. Because the query value changes with the bytes, each changed release
+    is a new URL that cannot be satisfied from cache.
+    """
+    digest = hashlib.sha1((STATIC_DIR / filename).read_bytes()).hexdigest()
+    return digest[:12]
+
+
 if STATIC_DIR.is_dir():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        return FileResponse(STATIC_DIR / "index.html")
+    def index() -> HTMLResponse:
+        """Serve the console shell without allowing it to go stale.
+
+        The HTML is deliberately not cacheable. It is tiny, it names the
+        current hashed CSS/JS URLs, and caching it would pin an old UI even
+        after all of the assets underneath it have changed.
+        """
+        shell = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        shell = shell.replace("__CSS_VERSION__", _asset_version("styles.css"))
+        shell = shell.replace("__JS_VERSION__", _asset_version("app.js"))
+        return HTMLResponse(
+            shell,
+            headers={
+                "Cache-Control": "no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - manual entry point

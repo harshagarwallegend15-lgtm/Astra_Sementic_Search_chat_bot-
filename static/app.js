@@ -1035,16 +1035,17 @@ function bind() {
     item.onclick = () => showView(item.dataset.view);
   });
 
-  // Corner brackets are drawn by a pseudo-element, so each panel needs one
-  // empty carrier element. Injected rather than hand-written into the markup
-  // because it is pure decoration and must never appear in the HTML source a
-  // reviewer reads.
+  // Corner brackets are pure frame decoration, so their elements are injected
+  // rather than hand-written into every panel. All four corners are used: two
+  // corners left half the box visually unfinished.
   document.querySelectorAll(".panel.bracket").forEach((panel) => {
-    if (panel.querySelector(".bracket-corners")) return;
-    const corners = document.createElement("span");
-    corners.className = "bracket-corners";
-    corners.setAttribute("aria-hidden", "true");
-    panel.appendChild(corners);
+    if (panel.querySelector(".corner")) return;
+    ["corner-tl", "corner-tr", "corner-bl", "corner-br"].forEach((position) => {
+      const corner = document.createElement("i");
+      corner.className = `corner ${position}`;
+      corner.setAttribute("aria-hidden", "true");
+      panel.appendChild(corner);
+    });
   });
 
   $("hero-open-query").onclick = () => {
