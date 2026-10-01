@@ -1,68 +1,65 @@
 # syntax=docker/dockerfile:1
 #
-# ASTRA INTEL - Streamlit app image.
+# ASTRA INTEL - FastAPI console image for Railway / Render.
 #
-# Notes:
-#  * This image is large (torch + sentence-transformers + faiss). If you only
-#    need to run the app locally, a virtualenv is lighter and faster.
-#  * By default this image runs in "local LLM" mode: it talks to an Ollama
-#    server you provide on the host, so no API key is baked in. Run the app
-#    container with:
-#        docker run --rm -p 8501:8501 \
-#            -e LLM_BASE_URL=http://host.docker.internal:11434 \
-#            -v "$(pwd)/data:/app/data" astra-intel
-#  * Never bake an API key into the image. Pass it at run time with -e.
+# This supersedes the Streamlit image: the vanilla console in static/ is the
+# front end, served by api.py on one port. The previous CMD started Streamlit,
+# which would have deployed the wrong application entirely.
+#
+# Size note: torch dominates the image. It is pulled from the CPU-only index so
+# a CPU host does not download ~2 GB of CUDA libraries it can never use.
+#
+# Never bake an API key into the image. Railway injects it at run time.
 
-FROM python:3.12-slim AS base
+FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
-    OLLAMA_HOST=0.0.0.0:11434
+    HF_HOME=/app/.cache/huggingface \
+    TOKENIZERS_PARALLELISM=false
 
-# libGL/libglib are needed by opencv-style transitive deps; build-essential lets
-# pip fall back to source builds for wheels that are missing on this platform.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+    && apt-get install -y --no-recommends \
         ca-certificates curl build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Install torch from the CPU-only index so the image does not pull ~2 GB of
-# CUDA libraries that a CPU host will never use.
 COPY requirements.txt ./
 RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu \
         -r requirements.txt
 
-# Warm the embedding model into the image so the first query is not slow.
-# Skipped automatically when EMBEDDING_BACKEND=hashing.
 COPY src/ ./src/
+COPY static/ ./static/
+COPY api.py ./
+COPY sample-documents/ ./sample-documents/
+COPY sample-metadata.json ./example-questions.md ./
+
+# Bake the embedding model into the image. Without this the first request
+# downloads ~90 MB from HuggingFace, and on a platform that freezes the
+# filesystem after the first response that download either fails or silently
+# re-runs on every cold start.
 RUN python -c "\
 from src.config import get_settings;\
 from src.embeddings import get_embedder;\
 e = get_embedder(get_settings());\
 print('embedding backend ready:', e.name, e.dimensions)"
 
-COPY app.py ./
-COPY sample-documents/ ./sample-documents/
-COPY sample-metadata.json ./
-
+# The FAISS index and uploaded PDFs live on a mounted volume, not here.
 RUN mkdir -p data/vectorstore data/uploads
 
-EXPOSE 8501
+EXPOSE 8502
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
-    CMD curl -fsS http://localhost:8501/_stcore/health || exit 1
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
+    CMD curl -fsS "http://localhost:${PORT:-8502}/api/health" || exit 1
 
-# Run as a non-root user.
+# The index directory is written at run time, so the service cannot run as a
+# user that lacks write access to it.
 RUN useradd --create-home --uid 10001 astra \
     && chown -R astra:astra /app
 USER astra
 
-CMD ["streamlit", "run", "app.py", \
-     "--server.port=8501", \
-     "--server.address=0.0.0.0", \
-     "--server.headless=true"]
+# PORT is injected by the platform and read in api.py's main block.
+CMD ["python", "api.py"]

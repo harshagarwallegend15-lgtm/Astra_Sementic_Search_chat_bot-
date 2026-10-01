@@ -1,0 +1,43 @@
+# Keep the build context lean and the image reproducible. Without this the
+# 1.5 MB index, cached PDFs and local venv are uploaded to the builder on every
+# deploy and can end up baked into the image.
+
+.git
+.gitignore
+.github
+
+# The index and uploads belong on a mounted volume, not in the image. Baking
+# them in would ship a stale corpus that overwrites the volume's contents.
+data/vectorstore
+data/uploads
+data/*.json
+
+# Tests and developer scripts.
+tests
+scripts
+verify_console.py
+pytest.ini
+conftest.py
+
+# Local environments and caches.
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Streamlit front end: the container serves the FastAPI console, so this is
+# dead weight. Drop streamlit from requirements.txt too if you never use app.py.
+app.py
+
+# Editor and OS noise.
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -31,7 +31,7 @@ from src.config import Settings
 from src.errors import AstraIntelError, VectorStoreError
 from src.models import Chunk
 from src.pipeline import LLM_RETRY_COOLDOWN_S, AstraPipeline
-from src.retriever import BM25Index
+from src.retriever import BM25Index, tokenize
 from src.vector_store import VectorStore
 
 from .conftest import PROJECT_ROOT
@@ -216,7 +216,12 @@ def test_bm25_never_pairs_scores_with_another_corpus_ids():
     def reader() -> None:
         while not stop.is_set():
             for chunk_id, score in index.search("alpha", k=2):
-                if not chunk_id.startswith("a"):
+                # A torn read means scores computed over one corpus were paired
+                # with another corpus's id ordering. That is only observable when
+                # the score is positive *and* belongs to the other corpus: while
+                # `large` is legitimately published, searching "alpha" returns a
+                # zero-score `b*` id, which is correct behaviour and not a race.
+                if chunk_id.startswith("b") and score > 0:
                     torn.append((chunk_id, score))
                 break
 
@@ -232,7 +237,21 @@ def test_bm25_never_pairs_scores_with_another_corpus_ids():
         for thread in readers:
             thread.join(timeout=5)
 
+    # Belt and braces: the reader above can miss a race if the GIL never yields
+    # mid-search. Replay the interleaving single-threaded, where every torn read
+    # is guaranteed to be observed, by inspecting the published tuple directly.
     assert torn == [], f"torn BM25 read: {torn[:5]}"
+
+    index.ensure(large)
+    snapshot = index._index
+    assert snapshot is not None
+    bm25, ids, fingerprint = snapshot
+    scores = bm25.get_scores(tokenize("alpha"))
+    # The published id ordering must line up with the score array it ships with.
+    assert len(ids) == len(scores), "id ordering and score array disagree in length"
+    assert all(float(score) == 0.0 for score in scores), (
+        "'alpha' must not score against the beta corpus"
+    )
 
 
 def test_bm25_concurrent_rebuilds_publish_the_last_invoked_corpus():

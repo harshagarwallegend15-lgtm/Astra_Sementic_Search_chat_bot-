@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import sys
 import threading
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -163,10 +165,48 @@ def _as_dict(value: Any) -> Any:
 # app
 # --------------------------------------------------------------------------
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Seed an empty index on first boot.
+
+    Deployed with a mounted volume, the first start finds ``data/vectorstore``
+    empty: the index is gitignored, so a fresh container has nothing in it. The
+    console would then sit at "empty corpus", and worse, /api/health returns 503
+    while the index is empty, which makes the platform's own health check fail
+    and marks the deployment unhealthy.
+
+    So on startup, if there is genuinely nothing indexed, index the bundled
+    starter PDFs. Seeding is skipped whenever chunks already exist, so a
+    restart never discards an operator's uploads.
+    """
+    if os.environ.get("ASTRA_SKIP_SEED", "").lower() in {"1", "true", "yes"}:
+        logger.info("ASTRA_SKIP_SEED set; leaving the index untouched.")
+    else:
+        try:
+            pipeline = await run_in_threadpool(get_pipeline)
+            if pipeline.store.is_empty:
+                logger.info("Index is empty; seeding the starter documents.")
+                result = await run_in_threadpool(pipeline.index_starter_documents)
+                logger.info(
+                    "Seeded %d document(s), %d chunks in %.1fs.",
+                    len(result.added),
+                    result.chunk_count,
+                    result.elapsed_ms / 1000,
+                )
+            else:
+                logger.info("Index already populated; skipping the seed.")
+        except Exception as exc:  # noqa: BLE001 - never block the boot
+            # A failed seed must not stop the service: the console still loads,
+            # and the operator can retry from the Maintenance controls.
+            logger.error("Could not seed the starter index: %s", exc)
+    yield
+
+
 app = FastAPI(
     title="ASTRA INTEL",
     description="Grounded question answering over indexed PDF documents.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 _pipeline: AstraPipeline | None = None
@@ -523,6 +563,15 @@ if STATIC_DIR.is_dir():
 
 
 if __name__ == "__main__":  # pragma: no cover - manual entry point
+    import os
+
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8502, log_level="info")
+    # Bind to every interface and honour PORT when the platform supplies one.
+    # Locally there is no PORT, so this is still 127.0.0.1:8502. In a
+    # container the host must be 0.0.0.0 or the platform's proxy cannot reach
+    # the process at all, and the injected PORT is the only place the real
+    # port is stated.
+    port = int(os.environ.get("PORT", "8502"))
+    host = "0.0.0.0" if os.environ.get("PORT") else "127.0.0.1"
+    uvicorn.run(app, host=host, port=port, log_level="info")

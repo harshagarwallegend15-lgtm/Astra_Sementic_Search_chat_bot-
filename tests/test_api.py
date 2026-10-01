@@ -10,7 +10,10 @@ definition site, exactly as ``tests/test_ui_smoke.py`` does for the Streamlit ap
 
 from __future__ import annotations
 
+import io
 import shutil
+import zlib
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -60,6 +63,62 @@ def client(tmp_path_factory):
     api._pipeline = None
 
 
+def _tiny_pdf() -> bytes:
+    """A valid one-page PDF with a real text layer.
+
+    Built by hand with zlib rather than pymupdf so the helper needs no heavy
+    import at module scope. The body deliberately clears ``MIN_DOCUMENT_CHARS``
+    (200): a shorter file is rejected as too small to index, which is correct
+    behaviour and would make this an upload test that never uploads anything.
+    """
+    def obj(number: int, body: str) -> bytes:
+        return f"{number} 0 obj\n{body}\nendobj\n".encode()
+
+    lines = [
+        "This document was uploaded by an operator during a test run.",
+        "It exists to prove that an index survives a restart without being "
+        "replaced by the bundled starter set, which would silently discard "
+        "anything the operator had added.",
+        "Unmanned ground vehicles are platforms that carry out a mission with "
+        "no human crew onboard, under remote supervision from a control station.",
+    ]
+    text = "BT /F1 11 Tf 72 720 Td 14 TL\n"
+    for line in lines:
+        text += f"({line}) Tj T*\n"
+    text += "ET"
+    compressed = zlib.compress(text.encode())
+    objects = [
+        obj(1, "<< /Type /Catalog /Pages 2 0 R >>"),
+        obj(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>"),
+        obj(
+            3,
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            "/Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
+        ),
+        (
+            f"4 0 obj\n<< /Length {len(compressed)} /Filter /FlateDecode >>\nstream\n".encode()
+            + compressed
+            + b"\nendstream\nendobj\n"
+        ),
+        obj(5, "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>"),
+    ]
+    out = io.BytesIO()
+    out.write(b"%PDF-1.4\n")
+    offsets = []
+    for chunk in objects:
+        offsets.append(out.tell())
+        out.write(chunk)
+    xref = out.tell()
+    out.write(f"xref\n0 {len(objects) + 1}\n0000000000 65535 f \n".encode())
+    for offset in offsets:
+        out.write(f"{offset:010d} 00000 n \n".encode())
+    out.write(
+        f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
+        f"startxref\n{xref}\n%%EOF".encode()
+    )
+    return out.getvalue()
+
+
 def _citation_shape(citation: dict) -> None:
     assert citation["marker"]
     assert citation["title"]
@@ -67,6 +126,112 @@ def _citation_shape(citation: dict) -> None:
     assert citation["excerpt"]
     assert 0.0 <= citation["score"] <= 1.0
     assert citation["chunk_id"]
+
+
+class TestStartupSeed:
+    """A deployed container starts with an empty index.
+
+    ``data/vectorstore`` is gitignored, so a fresh container has nothing in it.
+    Without a seed the console opens on an empty corpus and /api/health returns
+    503, which makes the platform's own health check fail the deployment. These
+    tests boot the app against an isolated empty directory and assert the seed
+    happens exactly once and only when needed.
+    """
+
+    @staticmethod
+    @contextmanager
+    def _booted(root, monkeypatch, **extra_env):
+        """Boot the app against an isolated directory, then tear it down.
+
+        ``api._pipeline`` is a module-level cache, so it is cleared on both
+        sides of every boot. Without that, a second boot would reuse the first
+        boot's pipeline and read the first boot's index.
+        """
+        import api
+
+        monkeypatch.setenv("VECTORSTORE_DIR", str(root / "vectorstore"))
+        monkeypatch.setenv("UPLOADS_DIR", str(root / "uploads"))
+        # The hashing backend keeps these hermetic: no model download.
+        monkeypatch.setenv("EMBEDDING_BACKEND", "hashing")
+        for key, value in extra_env.items():
+            monkeypatch.setenv(key, value)
+
+        # Settings are a process-wide singleton, so setting the environment is
+        # not enough: without this refresh every boot would reuse the paths
+        # resolved by whichever test ran first.
+        import src.config as config_module
+
+        monkeypatch.setattr(config_module, "_settings", None)
+
+        api._pipeline = None
+        try:
+            with TestClient(api.app) as test_client:
+                yield test_client
+        finally:
+            api._pipeline = None
+            config_module._settings = None
+
+    def test_an_empty_index_is_seeded_at_startup(self, tmp_path, monkeypatch):
+        with self._booted(tmp_path, monkeypatch) as test_client:
+            response = test_client.get("/api/health")
+            assert response.status_code == 200, response.text
+            payload = response.json()
+            assert payload["index_ready"] is True
+            assert payload["checks"]["index"]["documents"] == 3
+
+            state = test_client.get("/api/state").json()
+            assert len(state["documents"]) == 3
+            assert sum(d["chunk_count"] for d in state["documents"]) > 0
+
+    def test_an_existing_index_is_not_reseeded(self, tmp_path, monkeypatch):
+        """A restart must never discard what an operator uploaded.
+
+        Reseeding unconditionally would replace their documents with the bundled
+        starter set, so the upload would silently vanish across a deploy. The
+        marker document below is the tripwire: it is not in sample-documents/,
+        so if a reseed happened it would be gone.
+        """
+        with self._booted(tmp_path, monkeypatch) as test_client:
+            assert test_client.get("/api/health").status_code == 200
+            marker = _tiny_pdf()
+            upload = test_client.post(
+                "/api/upload",
+                files={"files": ("operator-upload.pdf", marker, "application/pdf")},
+            )
+            assert upload.status_code == 200, upload.text
+            assert len(upload.json()["added"]) == 1, upload.text
+            before = len(test_client.get("/api/state").json()["documents"])
+
+        with self._booted(tmp_path, monkeypatch) as restarted:
+            after = restarted.get("/api/state").json()["documents"]
+            assert len(after) == before, "the restart reseeded the index"
+            assert any(d["filename"] == "operator-upload.pdf" for d in after)
+            assert restarted.get("/api/health").status_code == 200
+
+    def test_the_seed_can_be_disabled(self, tmp_path, monkeypatch):
+        with self._booted(tmp_path, monkeypatch, ASTRA_SKIP_SEED="1") as test_client:
+            # Still 503: nothing was indexed and nothing was forced.
+            assert test_client.get("/api/health").status_code == 503
+
+    def test_a_failed_seed_does_not_stop_the_service(self, tmp_path, monkeypatch):
+        """Boot must survive an absent starter set.
+
+        The console still has to load so the operator can see the problem and
+        use the Maintenance controls. Refusing to start would leave a deploy
+        with nothing at all.
+        """
+        import api
+        import src.pipeline as pipeline_module
+
+        def explode(self, rebuild=False):
+            raise RuntimeError("starter documents are missing")
+
+        monkeypatch.setattr(
+            pipeline_module.AstraPipeline, "index_starter_documents", explode
+        )
+        with self._booted(tmp_path, monkeypatch) as test_client:
+            assert test_client.get("/").status_code == 200
+            assert test_client.get("/api/health").status_code == 503
 
 
 class TestService:
