@@ -96,15 +96,18 @@ def main() -> int:
     probe = static / "_intake_probe.html"
     probe_url = base + "/static/_intake_probe.html"
 
-    # The probe must be served from the app's own origin so the relative
+# The probe must be served from the app's own origin so the relative
     # /static/app.js resolves and the DOM is the real console, not a mock.
+    # Matched by prefix: cache-busting appends ?v=<hash>, and matching the bare
+    # tag now fails silently, so the harness never installs and the run reports
+    # a failure that has nothing to do with intake.
+    index = (static / "index.html").read_text(encoding="utf-8")
+    open_tag = index.find('<script src="/static/app.js')
+    if open_tag == -1:
+        raise SystemExit("app.js is not referenced from index.html")
+    close_tag = index.index("</script>", open_tag) + len("</script>")
     probe.write_text(
-        (static / "index.html")
-        .read_text(encoding="utf-8")
-        .replace(
-            '<script src="/static/app.js"></script>',
-            f'<script src="/static/app.js"></script><script>{HARNESS}</script>',
-        ),
+        index[:close_tag] + f"<script>{HARNESS}</script>" + index[close_tag:],
         encoding="utf-8",
     )
 
