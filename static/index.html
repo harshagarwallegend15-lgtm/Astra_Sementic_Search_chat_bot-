@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ASTRA INTEL — Document Operations</title>
+<link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+
+<!-- ── top bar ─────────────────────────────────────────────────────── -->
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <div>
+      <div class="brand-name">ASTRA&nbsp;INTEL</div>
+      <div class="brand-sub">Document Operations Console</div>
+    </div>
+  </div>
+  <div class="topbar-meta">
+    <span class="meta-item"><span class="meta-key">Provider</span><span id="metaProvider">—</span></span>
+    <span class="meta-item"><span class="meta-key">Model</span><span id="metaModel">—</span></span>
+    <span class="meta-item"><span class="meta-key">Embeddings</span><span id="metaEmbed">—</span></span>
+    <span id="llmBadge" class="badge badge-muted">CHECKING</span>
+  </div>
+</header>
+
+<!-- ── KPI strip ───────────────────────────────────────────────────── -->
+<section class="kpi-strip" id="kpiStrip">
+  <article class="kpi">
+    <div class="kpi-label">Documents</div>
+    <div class="kpi-value" id="kpiDocs">—</div>
+    <div class="kpi-foot" id="kpiDocsFoot">&nbsp;</div>
+  </article>
+  <article class="kpi">
+    <div class="kpi-label">Passages Indexed</div>
+    <div class="kpi-value" id="kpiChunks">—</div>
+    <div class="kpi-foot" id="kpiChunksFoot">&nbsp;</div>
+  </article>
+  <article class="kpi">
+    <div class="kpi-label">Queries Raised</div>
+    <div class="kpi-value" id="kpiQueries">0</div>
+    <div class="kpi-foot" id="kpiQueriesFoot">this session</div>
+  </article>
+  <article class="kpi">
+    <div class="kpi-label">Grounded Rate</div>
+    <div class="kpi-value" id="kpiGrounded">—</div>
+    <div class="kpi-foot">fully cited responses</div>
+  </article>
+  <article class="kpi">
+    <div class="kpi-label">Avg Evidence</div>
+    <div class="kpi-value" id="kpiConfidence">—</div>
+    <div class="kpi-foot">mean confidence</div>
+  </article>
+</section>
+
+<main class="layout">
+
+  <!-- ── left: query console ──────────────────────────────────────── -->
+  <section class="panel panel-query">
+    <div class="panel-head">
+      <h2>Raise a Query</h2>
+      <div class="panel-tools">
+        <button id="btnEvidence" class="btn btn-ghost" title="Retrieval only, no model call">Evidence only</button>
+        <button id="btnClearChat" class="btn btn-ghost" title="Clear the log">Clear log</button>
+      </div>
+    </div>
+
+    <div class="suggest-wrap">
+      <span class="field-label">Quick picks</span>
+      <div id="suggestions" class="suggestions"></div>
+    </div>
+
+    <form id="queryForm" class="query-form">
+      <textarea id="queryInput" rows="3" placeholder="e.g. What are the three primary mission types of electronic warfare?" required></textarea>
+      <button id="btnSubmit" class="btn btn-primary" type="submit">Submit Query</button>
+    </form>
+
+    <div id="consoleLog" class="console-log" aria-live="polite">
+      <div class="empty-state">
+        <h3>No queries logged</h3>
+        <p>Every response is verified against the retrieved pages. If the indexed
+           documents do not cover a question, the console reports that rather
+           than composing an unsupported answer.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── right: registers ─────────────────────────────────────────── -->
+  <aside class="panel-side">
+
+    <div class="panel">
+      <div class="panel-head"><h2>Document Register</h2></div>
+      <div class="table-wrap">
+        <table class="grid" id="docTable">
+          <thead>
+            <tr><th>Title</th><th class="num">Pages</th><th class="num">Passages</th><th>Status</th><th></th></tr>
+          </thead>
+          <tbody id="docBody">
+            <tr class="grid-empty"><td colspan="5">No documents indexed.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Intake</h2></div>
+      <div class="intake">
+        <label class="dropzone" id="dropzone">
+          <input type="file" id="fileInput" accept="application/pdf" multiple hidden />
+          <strong>Drop PDFs here</strong>
+          <span>or click to browse · text-based PDFs only</span>
+        </label>
+        <div class="intake-actions">
+          <button id="btnIndex" class="btn btn-primary" disabled>Index uploads</button>
+          <button id="btnRebuild" class="btn">Rebuild samples</button>
+          <button id="btnWipe" class="btn btn-danger">Wipe index</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Briefings</h2></div>
+      <button id="btnBriefings" class="btn btn-block">Generate briefings</button>
+      <div id="briefingList" class="briefings"></div>
+    </div>
+
+  </aside>
+</main>
+
+<div id="toastHost" class="toast-host" aria-live="polite"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

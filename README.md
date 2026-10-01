@@ -204,12 +204,57 @@ Keep the default `.env.example` values (no `.env` needed) and skip to step 4.
 
 ### 4. Run
 
+Two front ends share one backend. Pick either — they are not layered on top of
+each other, and both can run at once.
+
+**A. HTML/CSS/JavaScript console** (port 8502)
+
+```bash
+pip install fastapi uvicorn python-multipart
+python api.py
+```
+
+Open <http://localhost:8502>. This is vanilla HTML, CSS and JS with no build
+step and no framework, served by FastAPI. The visual language is a dense
+operations console: a KPI strip, a document register with status badges, and a
+per-query evidence register.
+
+**B. Streamlit** (port 8501)
+
 ```bash
 streamlit run app.py
 ```
 
-Open <http://localhost:8501>. The app indexes `sample-documents/` on first
-start; the index is cached in `data/vectorstore/`.
+Open <http://localhost:8501>. A chat-primary interface with the same
+capabilities.
+
+Both index `sample-documents/` on first start; the index is cached in
+`data/vectorstore/`.
+
+#### Why there are two
+
+`src/pipeline.py`, the retrieval and answering code, never imported Streamlit.
+That decoupling is what makes a plain HTML/CSS/JS front end possible: `api.py`
+exposes exactly the operations `app.py` wires to widgets — ask, evidence-only,
+upload, rebuild, remove, wipe, briefings — and `static/` renders them. Swapping
+front ends touches presentation only.
+
+| endpoint | purpose |
+| --- | --- |
+| `GET /api/state` | index stats, document register, model status |
+| `POST /api/ask` | grounded answer, citations and retrieved passages |
+| `POST /api/evidence` | passages above the relevance threshold, no model call |
+| `POST /api/upload` | ingest PDFs (multipart) |
+| `POST /api/rebuild` | re-extract the bundled samples |
+| `POST /api/clear` | wipe the index |
+| `DELETE /api/documents/{id}` | remove one document |
+| `POST /api/briefings` | per-document summaries |
+| `GET /api/suggestions` | quick-pick questions, read from `example-questions.md` |
+
+Interactive docs are at <http://localhost:8502/docs>.
+
+Note that `python-multipart` is required for uploads only; without it the server
+fails to start because the upload route cannot be registered.
 
 ### CLI ingestion
 
@@ -503,6 +548,12 @@ container alongside it; no API key is baked into the image.
 
 ```
 app.py                     Streamlit entry point + ingestion CLI
+api.py                     FastAPI app: same backend over HTTP
+static/                    HTML/CSS/JS console (no build step)
+  index.html               Console markup
+  styles.css               Design tokens, KPI strip, register grid
+  app.js                   Fetch calls, markdown rendering, KPI state
+.streamlit/config.toml     Streamlit theme
 src/
   config.py                Settings dataclass, env loading, validation
   embeddings.py            MiniLM / hashing embedders, backend selection
