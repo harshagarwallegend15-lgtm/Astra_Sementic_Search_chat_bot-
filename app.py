@@ -26,10 +26,11 @@ from src.llm import build_llm_client  # noqa: E402
 from src.logging_utils import setup_logging  # noqa: E402
 from src.pipeline import AstraPipeline  # noqa: E402
 from src.ui import (  # noqa: E402
+    TURNS_KEY,
     configure_page,
     render_chat,
-    render_chat_history,
     render_config_panel,
+    render_conversation,
     render_document_manager,
     render_header,
     render_ingest_result,
@@ -102,6 +103,8 @@ def main() -> None:
     )
     documents = st.session_state.get(_docs_key()) or refresh_documents(pipeline)
 
+    # Sidebar first: status, documents, briefings, configuration. The main pane
+    # is left entirely to the conversation.
     render_sidebar(
         settings.public_dict(),
         pipeline.stats(),
@@ -109,33 +112,28 @@ def main() -> None:
         llm_ready=llm is not None,
         llm_error=llm_error,
     )
-    with st.sidebar:
-        render_config_panel(settings.public_dict())
+    render_document_manager(
+        on_ingest=_make_ingest_handler(pipeline),
+        on_rebuild=_make_rebuild_handler(pipeline),
+        on_clear=_make_clear_handler(pipeline),
+    )
+    render_summary(
+        st.session_state.get("summaries"),
+        _make_summary_func(pipeline, llm),
+        llm_ready=llm is not None,
+    )
+    render_config_panel(settings.public_dict())
 
-    left, right = st.columns([2, 1], gap="large")
+    if st.session_state.get("ingest_result") is not None:
+        render_ingest_result(st.session_state.pop("ingest_result"))
 
-    with left:
-        render_document_manager(
-            on_ingest=_make_ingest_handler(pipeline),
-            on_rebuild=_make_rebuild_handler(pipeline),
-            on_clear=_make_clear_handler(pipeline),
-        )
-        if st.session_state.get("ingest_result") is not None:
-            render_ingest_result(st.session_state.pop("ingest_result"))
-        st.divider()
-        render_chat(
-            answer_func=_make_answer_func(pipeline, llm),
-            evidence_func=_make_evidence_func(pipeline),
-            suggested_questions=suggested_questions(),
-        )
-        render_chat_history(st.session_state.get("history", []))
-
-    with right:
-        render_summary(
-            st.session_state.get("summaries"),
-            _make_summary_func(pipeline, llm),
-            llm_ready=llm is not None,
-        )
+    questions = suggested_questions()
+    render_conversation(st.session_state.get(TURNS_KEY, []), questions)
+    render_chat(
+        answer_func=_make_answer_func(pipeline, llm),
+        evidence_func=_make_evidence_func(pipeline),
+        suggested_questions=questions,
+    )
 
 
 def _make_ingest_handler(pipeline: AstraPipeline):
@@ -176,6 +174,8 @@ def _make_clear_handler(pipeline: AstraPipeline):
     def handler() -> None:
         pipeline.clear_index()
         st.session_state["summaries"] = []
+        # The transcript cites pages that no longer exist, so it goes too.
+        st.session_state[TURNS_KEY] = []
         refresh_documents(pipeline)
         st.rerun()
 
@@ -184,16 +184,7 @@ def _make_clear_handler(pipeline: AstraPipeline):
 
 def _make_answer_func(pipeline: AstraPipeline, llm):
     def answer(question: str):
-        result = pipeline.answerer(llm).answer(question)
-        history = st.session_state.setdefault("history", [])
-        history.append(
-            {
-                "question": question,
-                "status": result.status,
-                "summary": result.answer[:200],
-            }
-        )
-        return result
+        return pipeline.answerer(llm).answer(question)
 
     return answer
 

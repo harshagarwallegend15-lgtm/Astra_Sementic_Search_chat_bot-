@@ -1,0 +1,22 @@
+# ASTRA INTEL theme.
+#
+# Dark by default: the app is a document-analysis console, and analysts read it
+# for long stretches next to reference PDFs. Colours are chosen for contrast -
+# body text is ~14:1 against the background and every status colour used in
+# src/ui.py clears 4.5:1 on the surfaces it sits on.
+
+[theme]
+base = "dark"
+primaryColor = "#38bdf8"
+backgroundColor = "#0a0f1c"
+secondaryBackgroundColor = "#151d31"
+textColor = "#e8eef9"
+font = "sans serif"
+
+[server]
+# The index is built on first connect; keep the dev server responsive while it
+# does and do not phone home for usage stats.
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false

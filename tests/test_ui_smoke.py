@@ -81,16 +81,55 @@ def _launch(root: Path, monkeypatch, llm=StubLLM(STUB_ANSWER)) -> AppTest:
     return at
 
 
+_TEXT_ATTRS = (
+    "markdown", "caption", "text", "code", "latex",
+    "error", "warning", "success", "info",
+    "title", "header", "subheader",
+)
+
+
+def _texts(node):
+    """Yield the text of every block under ``node``, descending into containers.
+
+    Two things this has to handle:
+
+    * ``ChatMessage`` is a container, not a leaf - it has no ``value`` of its own -
+      so the transcript's answer and citations only appear if we walk its children.
+    * Elements like ``at.sidebar`` hold nested blocks, so a text element may be
+      reached only by descending; a text element that *is* the node still has to
+      contribute its own ``value``.
+    """
+    own = getattr(node, "value", None)
+    if own:
+        yield str(own)
+    for attr in _TEXT_ATTRS:
+        for block in getattr(node, attr, None) or ():
+            value = getattr(block, "value", None)
+            if value:
+                yield str(value)
+    for child in getattr(node, "children", None) or ():
+        yield from _texts(child)
+
+
 def _blob(at: AppTest) -> str:
-    """Everything the app rendered, as one searchable string."""
-    parts = [str(md.value) for md in at.markdown]
-    parts += [str(cm.value) for cm in at.chat_message]
-    parts += [str(cap.value) for cap in at.caption]
-    parts += [str(e.value) for e in at.error]
-    parts += [str(w.value) for w in at.warning]
-    parts += [str(s.value) for s in at.success]
-    parts += [str(i.value) for i in at.info]
+    """Everything the app rendered, as one searchable string.
+
+    Includes the sidebar: documents, metrics and configuration all live there
+    now, and an assertion about the app's state must see them.
+    """
+    parts: list[str] = []
+    for attr in _TEXT_ATTRS + ("chat_message", "sidebar"):
+        for node in getattr(at, attr, None) or ():
+            parts.extend(_texts(node))
     return "\n".join(parts)
+
+
+def _alerts(at: AppTest):
+    """Every alert the app rendered, top level or inside a chat turn."""
+    found = list(at.error) + list(at.warning)
+    for message in at.chat_message:
+        found += list(message.error) + list(message.warning)
+    return found
 
 
 def _ask(at: AppTest, question: str, label: str = "Ask") -> AppTest:
@@ -180,16 +219,24 @@ class TestAnswering:
     def test_asking_with_no_llm_degrades_to_evidence(self, isolated_index, monkeypatch):
         """A dead provider must show evidence, never a traceback.
 
-        The banner is deliberately *styled* as an error for a refusal, so the
-        assertion is on the absence of an uncaught exception and of a Python
-        traceback, not on the absence of ``st.error``.
+        With no model the answerer returns ``ungrounded`` *with citations* - the
+        retrieval half of the system still works, and that is a legitimate
+        outcome rather than a failure. It is reported through a status pill, not
+        ``st.error``, because "the documents do not cover this" is information
+        and not an application error. The assertion is therefore that the
+        ungrounded status reaches the user by *some* channel, not that an alert
+        element specifically exists.
         """
         at = _ask(_launch(isolated_index, monkeypatch, llm=None), self.QUESTION)
         assert not at.exception, [str(e) for e in at.exception]
         blob = _blob(at)
         assert "Traceback" not in blob
-        assert at.error or at.warning, "expected a refusal/evidence banner"
-        assert "S1" in blob
+        assert "S1" in blob, "retrieval evidence should still be cited"
+
+        surfaced = ("not grounded", "no supporting evidence", "partially grounded")
+        assert _alerts(at) or any(word in blob.lower() for word in surfaced), (
+            "expected the ungrounded status to be surfaced to the user"
+        )
 
     def test_evidence_only_mode_needs_no_model(self, isolated_index, monkeypatch):
         at = _ask(
@@ -204,3 +251,65 @@ class TestAnswering:
         at = _ask(_launch(isolated_index, monkeypatch), "   ")
         assert not at.exception, [str(e) for e in at.exception]
         assert any("Enter a question" in str(w.value) for w in at.warning)
+
+
+def _suggestions() -> list[str]:
+    """The questions ``app.suggested_questions`` offers, parsed the same way."""
+    path = PROJECT_ROOT / "example-questions.md"
+    found = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^\d+[\.\)]\s+(.*\S)\s*$", line.strip())
+        if match:
+            found.append(match.group(1).strip().strip('"'))
+    return found
+
+
+class TestChatBehaviour:
+    """Behaviour of the chat view itself: sending, persisting, degrading."""
+
+    def test_clicking_a_suggested_question_asks_it(self, isolated_index, monkeypatch):
+        """Regression: the suggestion buttons used to be a silent no-op.
+
+        They set ``pending_question`` and rerun, but the composer read the text
+        input instead, found it empty and returned early - so clicking a
+        suggestion appeared to do nothing at all.
+        """
+        at = _launch(isolated_index, monkeypatch)
+        suggestion = _suggestions()[0]
+        next(b for b in at.button if b.label == suggestion).click().run()
+
+        assert not at.exception, [str(e) for e in at.exception]
+        turns = at.session_state["turns"]
+        assert len(turns) == 1, "clicking a suggestion should send it immediately"
+        assert turns[0]["question"] == suggestion
+        assert STUB_ANSWER.split(" [S1]")[0] in _blob(at)
+
+    def test_the_transcript_accumulates_and_survives_a_rerun(self, isolated_index, monkeypatch):
+        at = _launch(isolated_index, monkeypatch)
+        first = "What does the electronic warfare document say about jamming?"
+        second = "How are unmanned ground vehicles used for explosive ordnance?"
+        at = _ask(at, first)
+        at = _ask(at, second)
+
+        assert len(at.session_state["turns"]) == 2
+        blob = _blob(at)
+        assert first[:40] in blob
+        assert second[:40] in blob
+
+        # A bare rerun must not lose the transcript.
+        at.run()
+        assert not at.exception, [str(e) for e in at.exception]
+        assert len(at.session_state["turns"]) == 2
+        assert second[:40] in _blob(at)
+
+    def test_an_evidence_only_turn_stays_in_the_transcript(self, isolated_index, monkeypatch):
+        at = _ask(
+            _launch(isolated_index, monkeypatch, llm=None),
+            "What are the three primary mission types of electronic warfare?",
+            label="Show evidence only",
+        )
+        assert not at.exception, [str(e) for e in at.exception]
+        turn = at.session_state["turns"][-1]
+        assert turn["result"] is None, "evidence mode must not fabricate an answer"
+        assert turn["citations"], "evidence mode should carry the retrieved passages"
+        assert "S1" in _blob(at)
