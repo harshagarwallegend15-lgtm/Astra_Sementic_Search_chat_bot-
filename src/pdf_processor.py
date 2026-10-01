@@ -295,10 +295,19 @@ class PDFProcessor:
 
         char_total = sum(block.char_count for block in raw_blocks)
         if char_total < self.settings.min_document_chars:
+            # A distinct message, because the two cases need different advice.
+            # The inherited one tells the user their file is a scanned image,
+            # which is simply false here: the text extracted fine, there was
+            # just too little of it to be worth indexing.
             raise EmptyDocumentError(
                 f"{filename} yielded only {char_total} characters of text, "
                 f"below the {self.settings.min_document_chars} character minimum. "
-                "It is effectively empty."
+                "It is effectively empty.",
+                user_message=(
+                    f"{filename} contains only {char_total} characters of text. "
+                    f"At least {self.settings.min_document_chars} are needed to "
+                    "index a document, so this one was skipped."
+                ),
             )
 
         body_size = self._body_font_size(raw_blocks)

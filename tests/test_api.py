@@ -260,6 +260,31 @@ class TestIntake:
         assert asked == [document_id]
         assert payload["summaries"][0]["document_id"] == document_id
 
+    def test_a_short_pdf_reports_its_shortfall_not_a_scan(self, client, tmp_path):
+        """A too-short PDF needs different advice than an image-only one.
+
+        Both are `EmptyDocumentError`, so they previously shared one message
+        that told the user their file was a scanned image. It extracted text
+        fine; there was just too little of it. The message now names the
+        actual shortfall.
+        """
+        import pymupdf
+
+        doc = pymupdf.open()
+        doc.new_page().insert_text((72, 720), "Too short.", fontsize=11)
+        path = tmp_path / "stub.pdf"
+        doc.save(str(path))
+
+        response = client.post(
+            "/api/upload",
+            files={"files": ("stub.pdf", path.read_bytes(), "application/pdf")},
+        )
+
+        assert response.status_code == 400
+        detail = response.json()["detail"]
+        assert "characters of text" in detail
+        assert "scan" not in detail.lower()
+
     def test_briefing_an_unknown_document_is_a_404(self, client, monkeypatch):
         monkeypatch.setattr(
             client.api.AstraPipeline, "summaries",
