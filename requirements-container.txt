@@ -1,0 +1,36 @@
+# Container dependencies for the FastAPI console.
+#
+# Derived from requirements.txt minus everything the deployed image never
+# loads. The full requirements.txt installs Streamlit, langchain-ollama, pytest
+# and httpx, which together add hundreds of MB of build time and image weight
+# for code paths (`app.py`, the local Ollama provider, the test suite) that a
+# container serving api.py never executes. The .dockerignore already excludes
+# app.py, so importing it is impossible anyway.
+#
+# If you ever want to run the Streamlit UI in a container, use the full
+# requirements.txt and a different CMD.
+
+fastapi>=0.110,<1
+uvicorn[standard]>=0.27
+# Required by FastAPI to parse multipart/form-data for /api/upload. Without it
+# the app fails at import time, not at call time.
+python-multipart>=0.0.9
+pydantic>=2.5,<3
+
+langchain>=1.0,<2
+langchain-core>=1.0,<2
+langchain-community>=0.4,<1
+langchain-openai>=0.3,<1
+# src/llm.py imports ChatOllama at module scope, so api.py cannot even import
+# without it, even when the configured provider is Groq. The package itself is
+# thin; it is the Ollama *server* that is optional, not the client.
+langchain-ollama>=1.0,<2
+
+pymupdf>=1.24
+
+faiss-cpu>=1.9
+sentence-transformers>=5.0
+numpy>=1.26
+rank-bm25>=0.2.2
+
+python-dotenv>=1.0

@@ -1,0 +1,40 @@
+# Render blueprint for ASTRA INTEL.
+#
+# Render reads this on "New > Blueprint" and provisions the service, the disk
+# and the health check. Without the disk the FAISS index is rebuilt on every
+# cold start; with it, restarts keep the corpus.
+#
+# Generate a blueprint at https://render.com/ from this repo. The service reads
+# PORT, which Render injects, so nothing here hardcodes a port.
+
+services:
+  - type: web
+    name: astra-intel
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    plan: starter # persistent disk + always-on; `free` spins down and evicts
+    healthCheckPath: /api/health
+    # First boot has to extract, chunk and embed 3 PDFs while loading MiniLM.
+    # The default 100s window can elapse on a cold container, which Railway and
+    # Render both read as a failed deploy.
+    healthCheckTimeout: 180
+    autoDeploy: true
+    envVars:
+      - key: LLM_PROVIDER
+        value: groq
+      - key: LLM_MODEL
+        value: openai/gpt-oss-120b
+      - key: LLM_API_KEY
+        sync: false # set this in the dashboard; never commit a key
+      - key: EMBEDDING_BACKEND
+        value: semantic # fail loudly rather than silently falling back to
+                         # lexical hashing, which would wreck retrieval quality
+      - key: HF_TOKEN
+        sync: false # optional: raises Hugging Face download rate limits
+      - key: LOG_LEVEL
+        value: INFO
+    disk:
+      name: astra-data
+      mountPath: /app/data
+      sizeGB: 1

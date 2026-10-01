@@ -21,15 +21,17 @@ ENV PYTHONUNBUFFERED=1 \
     TOKENIZERS_PARALLELISM=false
 
 RUN apt-get update \
-    && apt-get install -y --no-recommends \
-        ca-certificates curl build-essential \
+    && apt-get install -y --no-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-COPY requirements.txt ./
+# The container installs a trimmed set. The full requirements.txt pulls in
+# Streamlit, langchain-ollama and pytest, which a server running api.py never
+# imports, at the cost of a much heavier and slower build.
+COPY requirements.txt requirements-container.txt ./
 RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu \
-        -r requirements.txt
+        -r requirements-container.txt
 
 COPY src/ ./src/
 COPY static/ ./static/
