@@ -24,10 +24,12 @@ services:
     # container is listening; a cold start that extracts, chunks and embeds the
     # starter PDFs just takes longer to get there.
     autoDeployTrigger: commit
-    # A briefing is a map-reduce over the corpus, several sequential model
-    # calls, and can run for over a minute. The 30s default SIGTERM grace would
-    # kill it mid-request.
-    maxShutdownDelaySeconds: 120
+    # maxShutdownDelaySeconds was removed deliberately. Render rejects the whole
+    # Blueprint for a service that has both a disk and that field, and it does
+    # so after the editor has already accepted every other key. The disk wins:
+    # without it the FAISS index and uploaded PDFs are lost on every deploy and
+    # the corpus is re-embedded from scratch on each cold start. A briefing cut
+    # short by a redeploy is a rerunnable inconvenience; a lost corpus is not.
     envVars:
       - key: LLM_PROVIDER
         value: groq

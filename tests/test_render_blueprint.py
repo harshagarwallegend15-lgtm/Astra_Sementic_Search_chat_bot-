@@ -138,6 +138,26 @@ def test_the_disk_is_only_attached_to_a_paid_plan(blueprint):
             )
 
 
+def test_a_disk_is_never_combined_with_max_shutdown_delay(blueprint):
+    """Render rejects `disk` + `maxShutdownDelaySeconds` on one service.
+
+    The Blueprint editor accepted this file until the service was created, then
+    failed with "max shutdown delay is not supported for services with a disk".
+    Render's published schema does not encode that incompatibility - both keys
+    are individually valid - so the schema test above passed and could not have
+    caught it. Cross-field rules have to be asserted here.
+    """
+    offenders = [
+        service.get("name")
+        for service in blueprint["services"]
+        if "disk" in service and "maxShutdownDelaySeconds" in service
+    ]
+    assert not offenders, (
+        f"{offenders} combine a disk with maxShutdownDelaySeconds, which "
+        "Render refuses to create"
+    )
+
+
 def test_env_vars_are_well_formed(blueprint):
     """An env var must be a literal, a dashboard prompt, or a reference.
 
