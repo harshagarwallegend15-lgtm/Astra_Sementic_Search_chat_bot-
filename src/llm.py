@@ -153,6 +153,13 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
             "max_tokens": self.settings.llm_max_tokens,
             "timeout": self.settings.llm_timeout,
             "api_key": self.settings.llm_api_key or "not-needed",
+            # Opt out of transport compression. Providers such as Groq gzip
+            # responses, and the installed httpx2 decodes them with
+            # zlib(output_buffer_limit=...), which only exists on Python 3.14.
+            # On 3.13 that raises a TypeError on every single request. Responses
+            # here are capped at LLM_MAX_TOKENS, so the bandwidth saved by
+            # gzipping is negligible next to a hard failure.
+            "default_headers": {"Accept-Encoding": "identity"},
         }
         base_url = self.settings.resolved_base_url
         if base_url:

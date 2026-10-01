@@ -21,12 +21,44 @@ from typing import Iterable, Sequence
 from .models import RetrievedChunk, normalise_whitespace, truncate
 
 MARKER_PATTERN = re.compile(r"\[(?:S|s)\s?(\d{1,3})\]")
-ANY_BRACKET_CID_PATTERN = re.compile(r"\[(?:S|s)\s?(\d{1,3})\s*,\s*(?:p{1,2}\.?\s*)?(\d{1,4})\]")
+ANY_BRACKET_CID_PATTERN = re.compile(r"\[\s*(?:S|s)\s*(\d{1,3})\s*,\s*(?:p{1,2}\.?\s*)?(\d{1,4})\s*\]")
 # A bare bracketed integer, e.g. "[59]". These are the source document's own
 # reference markers (the PDFs are rendered from Wikipedia), not citations into
 # this index. Only matched after [S#] markers have already been normalised, so
 # a real citation can never be swallowed by this.
-BARE_REFERENCE_PATTERN = re.compile(r"\[(?:\d{1,4}(?:\s*[,\-–]\s*\d{1,4})*)\]")
+BARE_REFERENCE_PATTERN = re.compile(r"\[\s*(?:\d{1,4}(?:\s*[,\-\u2013]\s*\d{1,4})*)\s*\]")
+
+# A citation whose brackets contain stray whitespace, e.g. "[ S1 ]" or "[S 1]".
+# Models produce this routinely, and because MARKER_PATTERN only tolerates one
+# optional space such a marker is invisible to every downstream check: the answer
+# looks fully written but scores as uncited. Rewrite it to canonical "[S1]" once,
+# in normalise_markers, and leave the matching patterns themselves strict.
+SPACED_MARKER_PATTERN = re.compile(r"\[\s*(?:S|s)\s*(\d{1,3})\s*\]")
+
+# A multi-source marker such as "[S1, S2]"; it collapses to the first source.
+MULTI_MARKER_PATTERN = re.compile(r"\[\s*(S\s?\d{1,3})(?:\s*,\s*S\s?\d{1,3})*\s*\]")
+
+# Models do not always emit ASCII brackets. Groq's gpt-oss-120b, for example,
+# writes "capabilities【S1】" with U+3010/U+3011 lenticular brackets, which every
+# pattern above treats as unrecognised text rather than a citation. Left alone
+# that silently costs citations and can downgrade a fully grounded answer to
+# no_context. Fold the common look-alikes (and full-width digits) back to ASCII
+# before any marker matching happens.
+_BRACKET_FOLD = str.maketrans(
+    {
+        "\u3010": "[", "\u3011": "]",  # lenticular
+        "\u3014": "[", "\u3015": "]",  # tortoise shell
+        "\u3016": "[", "\u3017": "]",  # white lenticular
+        "\u3018": "[", "\u3019": "]",  # white tortoise shell
+        "\u27e8": "[", "\u27e9": "]",  # mathematical angle
+        "\u300a": "[", "\u300b": "]",  # double angle
+        "\u2039": "[", "\u203a": "]",  # single angle
+        "\uff08": "[", "\uff09": "]",  # fullwidth parens
+        "\uff3b": "[", "\uff3d": "]",  # fullwidth square brackets
+        "\uff5b": "[", "\uff5d": "]",  # fullwidth braces
+        **{chr(0xFF10 + d): str(d) for d in range(10)},  # fullwidth digits
+    }
+)
 PERCENT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)\s*(?:%|percent|per\s?cent)")
 NUMBER_PATTERN = re.compile(r"\b(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\b")
 YEAR_PATTERN = re.compile(r"\b(1[5-9]\d{2}|20\d{2}|21\d{2})\b")
@@ -115,11 +147,17 @@ def normalise_markers(text: str) -> str:
     The prompt forbids the model from writing page numbers, but smaller models
     do it anyway. Stripping the page keeps a well-formed citation usable instead
     of discarding the whole answer, and the page is re-derived from the chunk.
+
+    Unicode bracket look-alikes and stray interior whitespace are folded down to
+    canonical ``[S1]`` here as well, so callers only ever need to handle one
+    marker style.
     """
     if not text:
         return ""
+    text = text.translate(_BRACKET_FOLD)
+    text = SPACED_MARKER_PATTERN.sub(lambda m: f"[S{m.group(1)}]", text)
     text = ANY_BRACKET_CID_PATTERN.sub(lambda m: f"[S{m.group(1)}]", text)
-    text = re.sub(r"\[\s*(S\s?\d{1,3})(?:\s*,\s*S\s?\d{1,3})*\]", lambda m: f"[{m.group(1)}]", text)
+    text = MULTI_MARKER_PATTERN.sub(lambda m: f"[{re.sub(r'[ ]+', '', m.group(1))}]", text)
     # The source PDFs are rendered from Wikipedia, so their text carries
     # reference markers such as "[59][60]" into the chunk, and the model
     # faithfully reproduces them. They point at the document's own bibliography,

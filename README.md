@@ -154,32 +154,44 @@ Edit `.env`. The defaults are already correct for local Ollama.
 
 ### 3. Choose a language model
 
-**Option A — hosted Hugging Face (recommended on a CPU-only laptop)**
+**Option A — hosted Groq (recommended on a CPU-only laptop)**
 
-HF's Inference Providers router exposes an OpenAI-compatible
-`/v1/chat/completions` endpoint, so no code change is needed. Create a token at
-[huggingface.co → Settings → Access Tokens](https://huggingface.co/settings/tokens)
-and put it in `.env` (gitignored):
+Groq exposes an OpenAI-compatible `/chat/completions` endpoint, so no code change
+is needed. Create a key at
+[console.groq.com/keys](https://console.groq.com/keys) and put it in `.env`
+(gitignored):
 
 ```bash
 LLM_PROVIDER=openai
-LLM_BASE_URL=https://router.huggingface.co/v1
-LLM_API_KEY=hf_...
-LLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+LLM_BASE_URL=https://api.groq.com/openai/v1
+LLM_API_KEY=gsk_...
+LLM_MODEL=openai/gpt-oss-120b
 LLM_TIMEOUT=300
 ```
 
+Any OpenAI-compatible provider works the same way - only `LLM_BASE_URL` and
+`LLM_MODEL` change. Note the required `/openai/v1` path; the bare `/v1` base
+returns 404. Model names move over time, so list what your key can actually reach
+with `GET $LLM_BASE_URL/models` rather than trusting a copied ID.
+
 Measured on the 10-question evaluation:
 
-| | Local `llama3.2:3b` (CPU) | Hosted `Llama-3.1-8B-Instruct` |
+| | Local `llama3.2:3b` (CPU) | Hosted `gpt-oss-120b` (Groq) |
 |---|---|---|
-| Per question | 90–250 s | 3–21 s |
-| Full evaluation | ~20 min | ~2 min |
-| Grounded answers | 5 / 10 | **9 / 10** |
+| Per question | 90–250 s | 13–17 s |
+| Full evaluation | ~20 min | ~2.5 min |
+| Grounded answers | 5 / 10 | **7 / 10** |
+| Calibrated (`grounded` + honest `no_context`) | 5 / 10 | **8 / 10** |
 
-The hosted option is ~10x faster *and* substantially better. Free HF accounts
-have monthly credit limits; check yours before a long run. Keep a local model as
-a fallback for when the network is unavailable.
+The hosted option is ~10x faster *and* substantially better. Note that a larger
+model is not automatically better: `gpt-oss-120b` correctly refuses question 6,
+because the *Electronic warfare* document only lists "radio jamming, radar
+jamming and deception" together and never defines how they differ - whereas the
+smaller 8B model produced a confident answer to a question the corpus cannot
+answer.
+
+Hosted providers have quotas and credit limits; check yours before a long run and
+keep a local model as a fallback for when the network is unavailable.
 
 **Option B — local Ollama (no token, no credits)**
 
@@ -374,10 +386,45 @@ The checks catch regressions, not fresh prose problems.
 
 ### Latest results
 
-`data/eval-results.json`, hosted `Llama-3.1-8B-Instruct`, 10/10 checks passed,
-9/10 fully `grounded`. The single `partially_grounded` result is question 10,
-which is the intended refusal. Zero unsupported numbers and zero unresolved
-markers across all ten.
+`data/eval-results.json`, hosted `openai/gpt-oss-120b` via Groq, 10/10 checks
+passed with the complete questions and the trailing-hedge stripper active:
+
+| status | count | questions |
+| --- | --- | --- |
+| `grounded` | 7 | 1, 2, 3, 5, 6, 7, 8 |
+| `partially_grounded` | 2 | 4, 9 |
+| `no_context` | 1 | 10 (the intended refusal) |
+
+Zero unsupported numbers and zero unresolved markers across all ten. The two
+`partially_grounded` answers are calibrated rather than broken: question 4 had a
+stray `14` removed by the re-verification repair, and question 9 asks for risks
+"across all three documents" when retrieval only covered two, so the answer is
+explicitly scoped to what was retrieved.
+
+Question 8, the head-to-head UAV/UGV comparison, is `grounded` and now reads as
+a real comparison - shared roles in combat, target acquisition and civilian use -
+with both platforms cited in every bullet (`[S6][S7]`, `[S5][S2]`, `[S4][S5]`).
+That only became possible once `load_questions()` stopped truncating each
+question to its first line and sending the fragment "Compare unmanned aerial and
+unmanned ground vehicles as presented in the" to the model.
+
+### Citation markers from real models
+
+Both fixes below were found by reading actual `gpt-oss-120b` answers, and both
+were silently costing citations on otherwise fully grounded answers:
+
+- **Non-ASCII brackets.** The model writes `capabilities【S1】` with lenticular
+  brackets. `normalise_markers()` folds `【】〔〕⟨〉（）［］｛｝` and full-width
+  digits down to ASCII first.
+- **Interior whitespace.** Bullet lists come back as `[ S1 ]`. `MARKER_PATTERN`
+  tolerates a single optional space and nothing before `]`, so such a marker
+  matched nothing, the answer scored as uncited and `no_context`, and nothing in
+  the output hinted at a parsing failure.
+
+Normalising both to canonical `[S1]` in one place, ahead of marker matching, took
+`grounded` answers from 3 to 7 on the same ten questions. Stricter patterns would
+have rejected these answers; they are legitimate citations written in a slightly
+different style.
 
 ### Calibrating thresholds and comparing embedding models
 
@@ -502,6 +549,23 @@ does not affect answer latency, only indexing and retrieval.
 
 **Ollama connection refused.** `ollama serve` must be running, and the model
 pulled: `ollama pull llama3.2:3b`.
+
+**Every hosted request fails with `Decompressor.decompress() got an unexpected
+keyword argument 'output_buffer_limit'`.** Not an application bug. The installed
+`httpx2` decodes gzipped responses using a `zlib` argument that only exists on
+Python 3.14, so every request to a compressing provider (Groq, HF) fails on 3.12
+and 3.13. `OpenAICompatibleLLMClient` sends `Accept-Encoding: identity` to avoid
+the gzip path entirely, so an upgrade is not required. Responses are capped at
+`LLM_MAX_TOKENS`, so the bandwidth gzip would have saved is negligible.
+
+**`model_not_found` / "does not exist or you do not have access to it".** The
+model ID is wrong, or your key cannot reach it. List what your key can actually
+use with `GET $LLM_BASE_URL/models`.
+
+**Answers look fully written but report no citations.** Compare the raw answer
+text against its markers. If they read `[ S1 ]` or `【S1】`, you are running
+code older than the marker-normalisation fix in `normalise_markers()`; see
+[Citation markers from real models](#citation-markers-from-real-models).
 
 **Hugging Face rate-limit warnings while indexing.** Cosmetic if the model is
 cached. Set `HF_TOKEN` in `.env` to raise the limit.

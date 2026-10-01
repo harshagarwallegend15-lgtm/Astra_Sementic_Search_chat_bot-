@@ -47,6 +47,36 @@ class TestMarkerExtraction:
     def test_strip_all_markers_removes_every_marker(self):
         assert strip_all_markers("a [S1] b [S2]") == "a  b"
 
+    def test_unicode_bracket_markers_fold_to_ascii(self):
+        # Groq's gpt-oss-120b emits lenticular brackets rather than ASCII, which
+        # would otherwise look like unrecognised text and silently drop citations.
+        assert normalise_markers("capabilities\u3010S1\u3011 and more\u300aS3\u300b") == (
+            "capabilities[S1] and more[S3]"
+        )
+
+    def test_unicode_bracket_variants_are_all_parsed(self):
+        for raw in ("\u3010S1\u3011", "\u3014S1\u3015", "\u27e8S1\u27e9", "\uff08S1\uff09", "\uff5bS1\uff5d"):
+            assert extract_markers(normalise_markers(f"claim {raw}")) == ["S1"], raw
+
+    def test_fullwidth_digits_inside_marker_are_parsed(self):
+        assert extract_markers(normalise_markers("claim \u3010S\uff15\uff11\u3011")) == ["S51"]
+
+    def test_marker_with_interior_whitespace_is_canonicalised(self):
+        # gpt-oss writes "[ S1 ]" for bullet lists. MARKER_PATTERN alone only
+        # tolerates one optional space, so the citation silently vanished and the
+        # fully written answer was scored as no_context.
+        assert normalise_markers("list [ S1 ].") == "list [S1]."
+        assert extract_markers(normalise_markers("a [S 2] b")) == ["S2"]
+        assert extract_markers(normalise_markers("a [ s3 ] b")) == ["S3"]
+
+    def test_spaced_compound_markers_still_collapse(self):
+        assert normalise_markers("cite [ S1, S2 ].") == "cite [S1]."
+        assert normalise_markers("cite [ S1, p. 2 ].") == "cite [S1]."
+        assert normalise_markers("cite [S 1, S2 ].") == "cite [S1]."
+
+    def test_spaced_bare_reference_still_dropped(self):
+        assert normalise_markers("ref [ 59 ] here [S5]") == "ref  here [S5]"
+
 
 class TestNumericVerification:
     def test_fabricated_percentage_is_detected(self, uav_chunk):
