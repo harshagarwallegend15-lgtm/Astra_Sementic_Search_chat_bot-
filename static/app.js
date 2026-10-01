@@ -5,10 +5,10 @@
 const $ = (id) => document.getElementById(id);
 
 const STATUS = {
-  grounded:            { label: "Grounded",      cls: "badge-grounded", color: "#38a169" },
-  partially_grounded:  { label: "Partial",       cls: "badge-warn",     color: "#ed8936" },
-  no_context:          { label: "No Context",    cls: "badge-no_context", color: "#e53e3e" },
-  error:               { label: "Failed",        cls: "badge-error",    color: "#e53e3e" },
+  grounded:            { label: "Grounded",      cls: "badge-grounded", color: "#34d399" },
+  partially_grounded:  { label: "Partial",       cls: "badge-warn",     color: "#fbbf24" },
+  no_context:          { label: "No Context",    cls: "badge-no_context", color: "#fb7185" },
+  error:               { label: "Failed",        cls: "badge-error",    color: "#fb7185" },
 };
 
 const state = {
@@ -92,7 +92,7 @@ function inline(text) {
     .replace(/(^|[\s(])_(.+?)_(?=$|[\s.,;:)])/g, "$1<em>$2</em>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
     // Citation markers, normalised server-side, rendered as real superscripts.
-    .replace(/【\s*S(\d+)\s*】|\[\s*S(\d+)\s*\]/g,
+    .replace(/ã€\s*S(\d+)\s*ã€‘|\[\s*S(\d+)\s*\]/g,
       (_, a, b) => `<sup class="cite-ref">S${a || b}</sup>`);
 }
 
@@ -247,7 +247,7 @@ function drawCorpus() {
   );
   const steps = [0.08, 0.3, 0.55, 0.78, 1].map((f) => {
     const mix = Math.round(f * 255);
-    return `<i style="background:rgba(49,130,206,${0.1 + f * 0.85})"></i>`;
+    return `<i style="background:rgba(56,189,248,${0.1 + f * 0.85})"></i>`;
   }).join("");
   legend.innerHTML = `<span>1 passage</span>
     <span class="scale-steps">${steps}</span>
@@ -260,7 +260,7 @@ function drawCorpus() {
       const hint = p.passages
         ? ` data-hint title="${esc(d.title)} p.${p.page} - ${p.passages} passage${p.passages === 1 ? "" : "s"}"`
         : ` title="${esc(d.title)} p.${p.page} - no passages extracted"`;
-      return `<span class="cell" style="background:rgba(49,130,206,${alpha.toFixed(2)})"${hint}></span>`;
+      return `<span class="cell" style="background:rgba(56,189,248,${alpha.toFixed(2)})"${hint}></span>`;
     }).join("");
     return `<div class="corpus-row">
       <span class="corpus-label" title="${esc(d.title)}">${esc(d.title)}</span>
@@ -294,7 +294,7 @@ function drawOps() {
     </dl>
     <h3>Densest pages</h3>
     <ul class="key">${busiest.map((p) => `<li>
-        <span class="sw" style="background:rgba(49,130,206,${(0.1 + (p.passages / peak) * 0.85).toFixed(2)})"></span>
+        <span class="sw" style="background:rgba(56,189,248,${(0.1 + (p.passages / peak) * 0.85).toFixed(2)})"></span>
         Page ${p.page}<span style="margin-left:auto;font-variant-numeric:tabular-nums">${p.passages}</span>
       </li>`).join("")}</ul>`;
 }
@@ -307,22 +307,48 @@ function drawConfig() {
   }, null, 2);
 }
 
+/* Animate a KPI figure from whatever it currently shows to the new value, so a
+   refresh reads as the console updating rather than silently swapping digits. */
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+
+function setNum(id, value) {
+  const el = $(id);
+  const target = Number(value) || 0;
+  const from = Number(el.dataset.value || 0);
+  if (reduceMotion.matches || from === target) {
+    el.textContent = target;
+    el.dataset.value = String(target);
+    return;
+  }
+  el.dataset.value = String(target);
+  const started = performance.now();
+  const duration = 620;
+  const step = (now) => {
+    const t = Math.min(1, (now - started) / duration);
+    // easeOutCubic
+    const eased = 1 - Math.pow(1 - t, 3);
+    el.textContent = Math.round(from + (target - from) * eased);
+    if (t < 1 && el.dataset.value === String(target)) requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
 function drawKpis() {
   // The store reports `chunks`; fall back to the per-document sum so the KPI
   // still reads correctly if that key ever changes or is absent.
   const summed = state.documents.reduce((sum, d) => sum + (d.chunk_count || 0), 0);
   const chunks = state.stats.chunks ?? state.stats.chunk_count ?? summed;
   const pages = state.documents.reduce((sum, d) => sum + (d.page_count || 0), 0);
-  $("kpi-documents").textContent = state.documents.length;
+  setNum("kpi-documents", state.documents.length);
   $("kpi-documents-foot").textContent = `${pages} pages parsed`;
-  $("kpi-passages").textContent = chunks;
-  $("kpi-pages").textContent = pages;
+  setNum("kpi-passages", chunks);
+  setNum("kpi-pages", pages);
 
   const counts = { grounded: 0, partially_grounded: 0, no_context: 0 };
   for (const row of state.log) if (counts[row.status] !== undefined) counts[row.status] += 1;
-  $("kpi-grounded").textContent = counts.grounded;
-  $("kpi-partial").textContent = counts.partially_grounded;
-  $("kpi-nocontext").textContent = counts.no_context;
+  setNum("kpi-grounded", counts.grounded);
+  setNum("kpi-partial", counts.partially_grounded);
+  setNum("kpi-nocontext", counts.no_context);
 }
 
 function drawLog() {
@@ -615,5 +641,42 @@ function bind() {
   };
 }
 
+/* Pointer parallax: nudge the aurora orbs against the cursor. The CSS keyframes
+   own the drift, so this writes a separate custom property and composes with it
+   rather than fighting the animation. */
+function startAmbient() {
+  if (reduceMotion.matches) return;
+  const orbs = [...document.querySelectorAll(".aurora .orb")];
+  if (!orbs.length) return;
+  const strengths = [14, -18, 10, -8, 12];
+
+  let frame = null;
+  let px = 0, py = 0, cx = 0, cy = 0;
+
+  const loop = () => {
+    cx += (px - cx) * 0.045;
+    cy += (py - cy) * 0.045;
+    orbs.forEach((orb, i) => {
+      orb.style.translate = `${(cx * strengths[i]) / 10}px ${(cy * strengths[i]) / 10}px`;
+    });
+    frame = requestAnimationFrame(loop);
+  };
+
+  window.addEventListener("pointermove", (event) => {
+    px = (event.clientX / window.innerWidth - 0.5) * 2;
+    py = (event.clientY / window.innerHeight - 0.5) * 2;
+    if (!frame) loop();
+  }, { passive: true });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (frame) { cancelAnimationFrame(frame); frame = null; }
+    } else if (!frame) {
+      loop();
+    }
+  });
+}
+
 bind();
+startAmbient();
 loadState().then(loadSuggestions).catch((err) => toast("Could not load state: " + err.message, "err"));
