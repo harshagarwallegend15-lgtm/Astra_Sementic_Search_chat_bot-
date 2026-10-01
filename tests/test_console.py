@@ -82,17 +82,77 @@ def test_every_view_has_a_section_and_a_nav_entry(page):
 
 
 def test_the_navigation_stays_deliberate(page):
-    """Two destinations, each of which an operator actually works in.
+    """Three destinations, each of which an operator actually works in.
 
-    The previous build carried Corpus Grid, Briefings and Configuration as
-    separate tabs: the heatmap and the briefings were panels describing data
-    that lives in Documents, and Configuration was a raw settings dump whose
-    useful values are already shown as readouts.
+    Overview was added later as the landing surface. The previous build carried
+    five tabs: Corpus Grid, Briefings and Configuration were panels describing
+    data that lives in Documents, or a raw settings dump whose useful values
+    are already shown as readouts. Those three stay gone.
     """
     views = _views(page)
-    assert views == {"query", "documents"}
+    assert views == {"home", "query", "documents"}
     for dropped in ("corpus", "analytics", "config"):
         assert f"view-{dropped}" not in page, f"the {dropped} tab is back"
+
+
+def test_overview_is_the_landing_surface(page):
+    """The first thing a visitor sees must be Overview, not the query box.
+
+    A landing page whose header still says "Query" while the hero is on screen
+    reads as a half-finished build.
+    """
+    assert 'id="view-home" class="view is-active"' in page or (
+        'class="view is-active" id="view-home"' in page
+    ), "the home view is not the active one on load"
+    assert '<h1 id="view-title">Overview</h1>' in page, (
+        "the header still labels the landing surface as another view"
+    )
+    first_nav = page.index('class="nav-item is-active"')
+    assert 'data-view="home"' in page[first_nav : first_nav + 120], (
+        "the active nav entry is not Overview"
+    )
+    # The hero must offer a way into the actual product.
+    assert 'id="hero-open-query"' in page
+
+
+def test_the_hero_motion_respects_reduced_motion(page):
+    """A full-bleed looping background is a vestibular trigger.
+
+    The hero is the first thing anyone sees, so it is the one place that has to
+    stop completely rather than merely slow down.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    # Split on the at-rule, not the phrase: a comment at the top of the file
+    # also contains "prefers-reduced-motion", and matching that yields the whole
+    # stylesheet instead of the block.
+    marker = "@media (prefers-reduced-motion: reduce)"
+    assert marker in css, "no reduced-motion block at all"
+    blocks = css.split(marker)
+    hero_rules = "\n".join(blocks[1:])
+    assert ".hero-media video" in hero_rules, "the hero video is not disabled"
+    assert ".hero-media canvas" in hero_rules, "the hero canvas is not quieted"
+    assert 'id="hero-canvas"' in page
+
+
+def test_the_hero_video_is_local_and_optional(page):
+    """No CDN: an unreachable third-party asset would blank the hero mid-demo.
+
+    The element points at a repo-local path and starts transparent, and only
+    becomes visible once the browser reports that it is actually playing. A
+    missing file therefore leaves the canvas carrying the motion instead.
+    """
+    assert 'src="/static/media/hero.mp4"' in page, "the video source is not local"
+    assert "http://" not in page.split('id="hero-video"')[1][:400], (
+        "the hero video points at a remote host"
+    )
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    hero = script.split("function startHero")[1].split("\nfunction ")[0]
+    # Reveal only on a real `playing` event, never optimistically.
+    assert '"playing"' in hero, "the video is revealed without confirming playback"
+    assert 'is-live' in hero
+    # It must not animate while the hero is off screen or the tab is hidden.
+    assert "IntersectionObserver" in hero
+    assert "visibilitychange" in hero
 
 
 def test_destructive_actions_are_not_in_the_topbar(page):
@@ -129,7 +189,9 @@ def test_no_placeholder_dashes_survive_in_the_shipped_markup(page):
 
 def test_the_reduced_motion_block_covers_the_ambient_layers():
     css = (STATIC / "styles.css").read_text(encoding="utf-8")
-    block = css.split("prefers-reduced-motion")[1]
+    marker = "@media (prefers-reduced-motion: reduce)"
+    assert marker in css
+    block = "\n".join(css.split(marker)[1:])
     for layer in (".orb", ".grid-veil", ".sweep"):
         assert layer in block, f"{layer} still animates under reduced motion"
 

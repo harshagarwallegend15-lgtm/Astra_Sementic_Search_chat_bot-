@@ -451,6 +451,7 @@ function setFilter(filter) {
 // -------------------------------------------------------------- rendering --
 
 function renderAll() {
+  drawHome();
   drawReadouts();
   drawKpis();
   drawDonut();
@@ -752,26 +753,213 @@ function showThinking(on, text) {
   if (text) $("think-text").textContent = text;
 }
 
+function drawHome() {
+  const docs = state.documents.length;
+  const pages = totalPages();
+  const chunks = totalChunks();
+
+  $("hero-docs").textContent = docs || "0";
+  $("hero-passages").textContent = chunks.toLocaleString();
+  $("hero-pages").textContent = pages.toLocaleString();
+  $("hero-model").textContent = shortModel(state.runtime.llm_model);
+
+  $("home-documents").textContent = docs;
+  $("home-passages-tile").textContent = chunks.toLocaleString();
+  $("home-density").textContent = pages ? (chunks / pages).toFixed(1) : "0.0";
+  $("home-embed").textContent = shortModel(state.runtime.embedding_model);
+
+  $("home-bars").innerHTML = [...state.documents]
+    .sort((a, b) => b.chunk_count - a.chunk_count)
+    .map((d) => {
+      const ratio = d.chunk_count / Math.max(1, ...state.documents.map((x) => x.chunk_count));
+      const tier = ratio >= 0.7 ? "t-high" : ratio >= 0.3 ? "t-mid" : "t-low";
+      return `<div class="bar-row">
+        <span class="name" title="${esc(d.title)}">${esc(d.title)}</span>
+        <span class="bar-track"><span class="bar-fill ${tier}" style="width:${(ratio * 100).toFixed(1)}%"></span></span>
+        <span class="val">${d.chunk_count}</span>
+      </div>`;
+    }).join("");
+}
+
+/* ------------------------------------------------------------------ hero -- */
+
+/* Motion for the hero.
+   A canvas rather than a bundled video: it is a few kilobytes instead of a few
+   megabytes, it scales to any display without a re-encode, and it cannot 404.
+   If a real video is dropped at static/media/hero.mp4 it fades in over the top.
+   The canvas pauses whenever the hero is off screen or the tab is hidden, so it
+   costs nothing while an operator works in Query. */
+function startHero() {
+  const canvas = $("hero-canvas");
+  const video = $("hero-video");
+  if (!canvas) return;
+
+  // Fade the video in only if it genuinely plays. A 404 leaves the element
+  // present but never fires `playing`, so this cannot show a black box.
+  if (video) {
+    const reveal = () => video.classList.add("is-live");
+    video.addEventListener("playing", reveal, { once: true });
+    video.addEventListener("error", () => video.remove(), { once: true });
+    video.play?.().catch(() => {});
+  }
+
+  if (reduceMotion.matches) {
+    // Draw one static frame so the hero is never blank.
+    paintFrame(canvas, []);
+    return;
+  }
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  // Nodes drift and pulses travel between them: a quiet sense of a live
+  // network rather than a decorative loop.
+  const nodes = Array.from({ length: 26 }, (_, i) => ({
+    x: Math.random(),
+    y: Math.random(),
+    vx: (Math.random() - 0.5) * 0.00022,
+    vy: (Math.random() - 0.5) * 0.00022,
+    r: 1 + Math.random() * 1.9,
+    hue: i % 5 === 0 ? "190,245,255" : "56,189,248",
+  }));
+  const pulses = Array.from({ length: 7 }, () => ({
+    from: 0, to: 0, t: Math.random(), speed: 0.0006 + Math.random() * 0.0009,
+  }));
+
+  function paintFrame(target, pulsesToDraw) {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const w = target.clientWidth || target.offsetWidth;
+    const h = target.clientHeight || target.offsetHeight;
+    if (!w || !h) return;
+    if (target.width !== Math.round(w * dpr) || target.height !== Math.round(h * dpr)) {
+      target.width = Math.round(w * dpr);
+      target.height = Math.round(h * dpr);
+    }
+    const c = target.getContext("2d");
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+
+    // A faint measurement grid, matching the shell's backdrop.
+    c.strokeStyle = "rgba(56,189,248,0.055)";
+    c.lineWidth = 1;
+    const step = Math.max(38, Math.round(w / 22));
+    c.beginPath();
+    for (let x = 0; x <= w; x += step) { c.moveTo(x, 0); c.lineTo(x, h); }
+    for (let y = 0; y <= h; y += step) { c.moveTo(0, y); c.lineTo(w, y); }
+    c.stroke();
+
+    const pts = pulsesToDraw.map((p) => [nodes[p.from], nodes[p.to]]).filter((e) => e[0] && e[1]);
+
+    c.strokeStyle = "rgba(34,211,238,0.20)";
+    c.beginPath();
+    for (const [a, b] of pts) {
+      c.moveTo(a.x * w, a.y * h);
+      c.lineTo(b.x * w, b.y * h);
+    }
+    c.stroke();
+
+    for (const n of nodes) {
+      c.beginPath();
+      c.arc(n.x * w, n.y * h, n.r, 0, Math.PI * 2);
+      c.fillStyle = `rgba(${n.hue},0.75)`;
+      c.fill();
+    }
+
+    for (const [a, b] of pts) {
+      const t = 1; // head of the pulse
+      c.beginPath();
+      c.arc(a.x * w + (b.x - a.x) * w * t, a.y * h + (b.y - a.y) * h * t, 2.1, 0, Math.PI * 2);
+      c.fillStyle = "rgba(125,211,252,0.95)";
+      c.fill();
+    }
+  }
+
+  let raf = null;
+  let last = performance.now();
+
+  function frame(now) {
+    const dt = Math.min(now - last, 64);
+    last = now;
+
+    for (const n of nodes) {
+      n.x += n.vx * dt; n.y += n.vy * dt;
+      if (n.x < -0.02) n.x = 1.02; if (n.x > 1.02) n.x = -0.02;
+      if (n.y < -0.02) n.y = 1.02; if (n.y > 1.02) n.y = -0.02;
+    }
+    for (const p of pulses) {
+      p.t += p.speed * dt;
+      if (p.t >= 1) {
+        p.t = 0;
+        p.from = Math.floor(Math.random() * nodes.length);
+        p.to = Math.floor(Math.random() * nodes.length);
+      }
+    }
+    paintFrame(canvas, pulses);
+    raf = requestAnimationFrame(frame);
+  }
+
+  function start() {
+    if (raf === null && !reduceMotion.matches) {
+      last = performance.now();
+      raf = requestAnimationFrame(frame);
+    }
+  }
+  function stop() {
+    if (raf !== null) { cancelAnimationFrame(raf); raf = null; }
+  }
+
+  // Only animate while the hero is actually on screen.
+  const hero = document.getElementById("view-home");
+  if (hero && "IntersectionObserver" in window) {
+    new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.isIntersecting) start();
+        else { stop(); paintFrame(canvas, pulses); }
+      }
+    }, { threshold: 0.05 }).observe(hero);
+  } else {
+    start();
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stop(); else start();
+  });
+  window.addEventListener("resize", () => paintFrame(canvas, pulses));
+  start();
+}
+
+function showView(name) {
+  document.querySelectorAll(".nav-item").forEach((n) => {
+    const on = n.dataset.view === name;
+    n.classList.toggle("is-active", on);
+    if (on) n.setAttribute("aria-current", "page");
+    else n.removeAttribute("aria-current");
+  });
+  document.querySelectorAll(".view").forEach((v) => v.classList.remove("is-active"));
+  const view = $("view-" + name);
+  if (view) view.classList.add("is-active");
+  const titles = {
+    home:     ["Overview", "A grounded answer system over indexed defence briefings."],
+    query:    ["Query", "Ask the corpus, with every claim cited."],
+    documents:["Documents", "Intake, the register, and extraction quality."],
+  };
+  const [title, sub] = titles[name] || ["ASTRA INTEL", ""];
+  $("view-title").textContent = title;
+  $("view-sub").textContent = sub;
+  renderAll();
+}
+
 function bind() {
   document.querySelectorAll(".nav-item").forEach((item) => {
-    item.onclick = () => {
-      document.querySelectorAll(".nav-item").forEach((n) => {
-        n.classList.remove("is-active");
-        n.removeAttribute("aria-current");
-      });
-      item.classList.add("is-active");
-      item.setAttribute("aria-current", "page");
-      const view = item.dataset.view;
-      document.querySelectorAll(".view").forEach((v) => v.classList.remove("is-active"));
-      $("view-" + view).classList.add("is-active");
-      const titles = {
-        query: ["Query", "Ask the corpus, with every claim cited."],
-        documents: ["Documents", "Intake, the register, and extraction quality."],
-      };
-      $("view-title").textContent = titles[view][0];
-      $("view-sub").textContent = titles[view][1];
-      drawOps();
-    };
+    item.onclick = () => showView(item.dataset.view);
+  });
+
+  $("hero-open-query").onclick = () => {
+    showView("query");
+    $("ask-input").focus();
+  };
+  document.querySelectorAll("[data-goto]").forEach((button) => {
+    button.onclick = () => showView(button.dataset.goto);
   });
 
   document.querySelectorAll(".tile[data-filter]").forEach((tile) => {
@@ -1010,5 +1198,6 @@ function startAmbient() {
 }
 
 bind();
+startHero();
 startAmbient();
 loadState().then(loadSuggestions).catch((err) => toast("Could not load state: " + err.message, "err"));

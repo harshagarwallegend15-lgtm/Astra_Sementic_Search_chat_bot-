@@ -937,3 +937,97 @@ table.grid tr.empty:hover { background: none; }
   .answer, .brief, .toast { animation: none !important; }
   .tile:hover { transform: none !important; }
 }
+/* ============================================================ home / hero == */
+
+/* The video layer sits behind the canvas and is only ever visible once a real
+   file has loaded. Without one it stays transparent, so the canvas - which is
+   always available - carries the motion. A CDN asset would be a single point
+   of failure during a recorded demo; this is not. */
+.hero {
+  position: relative; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--r-lg);
+  margin-bottom: 18px; isolation: isolate;
+  background:
+    radial-gradient(120% 130% at 12% 0%, rgba(34,211,238,.10), transparent 58%),
+    radial-gradient(110% 120% at 92% 100%, rgba(251,191,36,.07), transparent 60%),
+    linear-gradient(180deg, var(--panel-top), var(--panel-bot));
+}
+
+.hero-media { position: absolute; inset: 0; z-index: 0; }
+.hero-media video, .hero-media canvas {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%; object-fit: cover;
+}
+/* No file, no element: keep the layers from reserving anything visible. */
+.hero-media video { opacity: 0; transition: opacity .9s ease; }
+.hero-media video.is-live { opacity: .5; }
+.hero-media canvas { opacity: .85; }
+/* A video should not fight the text; the scrim restores contrast. */
+.hero-scrim {
+  position: absolute; inset: 0;
+  background: linear-gradient(100deg,
+    rgba(4,8,15,.94) 0%, rgba(4,8,15,.86) 42%, rgba(4,8,15,.55) 72%,
+    rgba(4,8,15,.38) 100%);
+}
+
+.hero-body {
+  position: relative; z-index: 1;
+  padding: clamp(28px, 4.2vw, 58px);
+  max-width: 780px;
+}
+
+.hero-kicker {
+  margin: 0 0 10px; font-size: .68rem; letter-spacing: .22em;
+  text-transform: uppercase; color: var(--accent);
+}
+.hero-title {
+  margin: 0 0 16px; font-size: clamp(2.1rem, 5.2vw, 3.5rem);
+  line-height: 1.04; letter-spacing: -.02em; color: #f1f5f9;
+  text-shadow: 0 2px 30px rgba(0,0,0,.6);
+}
+.hero-lede {
+  margin: 0 0 24px; font-size: clamp(.94rem, 1.35vw, 1.06rem);
+  line-height: 1.62; color: #cbd5e1; max-width: 58ch;
+}
+.hero-cta { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 34px; }
+.hero-cta .btn { padding: 10px 20px; font-size: .84rem; }
+
+.hero-stats {
+  display: grid; gap: 14px 30px; margin: 0;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  border-top: 1px solid var(--line); padding-top: 20px;
+}
+.hero-stats div { min-width: 0; }
+.hero-stats dt {
+  font-size: .6rem; letter-spacing: .16em; text-transform: uppercase;
+  color: var(--ink-3); margin-bottom: 5px;
+}
+.hero-stats dd {
+  margin: 0; font-size: 1.32rem; font-weight: 600; color: #e2e8f0;
+  font-variant-numeric: tabular-nums;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.pitch {
+  display: grid; gap: 14px; margin-bottom: 18px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+.pitch p { margin: 0; font-size: .85rem; line-height: 1.6; color: var(--ink-2); }
+
+.home-model { font-size: .95rem !important; }
+
+/* ---------------------------------------------------------- hero motion -- */
+
+/* The whole hero stops moving under reduced motion. A looping background is
+   exactly the kind of thing that triggers vestibular symptoms, and this page is
+   the first thing a visitor sees. */
+@media (prefers-reduced-motion: reduce) {
+  .hero-media video { display: none; }
+  .hero-media canvas { opacity: .5; }
+  .hero-title, .hero-lede { animation: none !important; }
+}
+
+@media (max-width: 720px) {
+  .hero-body { padding: 26px 20px; }
+  .hero-stats { grid-template-columns: repeat(2, 1fr); }
+}

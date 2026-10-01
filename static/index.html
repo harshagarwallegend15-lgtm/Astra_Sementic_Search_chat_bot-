@@ -37,7 +37,11 @@
          briefings were folded into Documents, where the data they describe
          lives, instead of each earning a tab of its own. -->
     <nav class="nav" aria-label="Sections">
-      <button class="nav-item is-active" data-view="query" aria-current="page">
+      <button class="nav-item is-active" data-view="home" aria-current="page">
+        <span class="nav-rail" aria-hidden="true"></span>
+        <span class="nav-ico" aria-hidden="true"></span> Overview
+      </button>
+      <button class="nav-item" data-view="query">
         <span class="nav-rail" aria-hidden="true"></span>
         <span class="nav-ico" aria-hidden="true"></span> Query
       </button>
@@ -72,8 +76,8 @@
   <main class="main">
     <header class="topbar">
       <div class="topbar-title">
-        <h1 id="view-title">Query</h1>
-        <p class="muted" id="view-sub">Ask the corpus, with every claim cited.</p>
+        <h1 id="view-title">Overview</h1>
+        <p class="muted" id="view-sub">A grounded answer system over indexed defence briefings.</p>
       </div>
       <div class="topbar-actions">
         <button class="btn btn-ghost" id="btn-refresh" title="Re-read the backend state">
@@ -103,8 +107,97 @@
       </span>
     </div>
 
+    <!-- =============================== HOME =============================== -->
+    <section class="view is-active" id="view-home">
+
+      <section class="hero">
+        <!-- Video is opt-in and local. Drop a file at static/media/hero.mp4 and
+             it is used automatically; without one the animated canvas below
+             carries the motion. No CDN, so it cannot fail mid-recording. -->
+        <div class="hero-media" aria-hidden="true">
+          <video id="hero-video" autoplay muted loop playsinline preload="metadata">
+            <source src="/static/media/hero.mp4" type="video/mp4" />
+          </video>
+          <canvas id="hero-canvas"></canvas>
+          <span class="hero-scrim"></span>
+        </div>
+
+        <div class="hero-body">
+          <p class="hero-kicker">Defence document intelligence</p>
+          <h2 class="hero-title">Every briefing,<br />queryable.</h2>
+          <p class="hero-lede">
+            Ask a question across an entire corpus of defence PDFs. Every sentence
+            is verified against the passages it came from, cited to a page, and
+            refused when the evidence is not there.
+          </p>
+          <div class="hero-cta">
+            <button class="btn btn-primary" id="hero-open-query">Open the console</button>
+            <button class="btn btn-ghost" data-goto="documents">Manage the corpus</button>
+          </div>
+          <dl class="hero-stats">
+            <div><dt>Documents</dt><dd id="hero-docs">&mdash;</dd></div>
+            <div><dt>Passages</dt><dd id="hero-passages">&mdash;</dd></div>
+            <div><dt>Pages parsed</dt><dd id="hero-pages">&mdash;</dd></div>
+            <div><dt>Model</dt><dd id="hero-model">&mdash;</dd></div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="pitch">
+        <article class="panel">
+          <header class="panel-head"><h2>Retrieval</h2></header>
+          <p>Hybrid search fuses dense vectors with BM25 by reciprocal rank
+             fusion. Document diversity reserves context slots so a rival
+             document cannot be crowded out by the winner's redundancy.</p>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2>Grounding</h2></header>
+          <p>Each sentence is checked against the retrieved passages.
+             Unsupported numbers trigger a retry, then a refusal. The status
+             badge is never optimistic.</p>
+        </article>
+        <article class="panel">
+          <header class="panel-head"><h2>Ingestion</h2></header>
+          <p>PDFs are streamed, deduplicated by content hash and mapped to a
+             per-page density profile, so an operator can see where the
+             extractable material actually sits.</p>
+        </article>
+      </section>
+
+      <section class="panel">
+        <header class="panel-head">
+          <h2>Live corpus</h2>
+          <span class="muted tiny">read from the index at request time</span>
+        </header>
+        <div class="tiles" id="home-tiles">
+          <div class="tile tile-static">
+            <span class="tile-label">Documents</span>
+            <span class="tile-value" id="home-documents">&mdash;</span>
+            <span class="tile-foot">indexed</span>
+          </div>
+          <div class="tile tile-static">
+            <span class="tile-label">Passages</span>
+            <span class="tile-value" id="home-passages-tile">&mdash;</span>
+            <span class="tile-foot">retrievable</span>
+          </div>
+          <div class="tile tile-static">
+            <span class="tile-label">Density</span>
+            <span class="tile-value" id="home-density">&mdash;</span>
+            <span class="tile-foot">passages / page</span>
+          </div>
+          <div class="tile tile-static">
+            <span class="tile-label">Embeddings</span>
+            <span class="tile-value home-model" id="home-embed">&mdash;</span>
+            <span class="tile-foot">semantic</span>
+          </div>
+        </div>
+        <div id="home-bars" class="bars"></div>
+      </section>
+
+    </section>
+
     <!-- ============================== QUERY ============================== -->
-    <section class="view is-active" id="view-query">
+    <section class="view" id="view-query">
       <div class="deck">
 
         <div class="deck-main">
