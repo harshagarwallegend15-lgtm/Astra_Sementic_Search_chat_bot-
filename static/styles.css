@@ -29,13 +29,42 @@
   --info: #38bdf8;
   --accent: #22d3ee;
 
-  /* Surfaces */
+/* Surfaces */
   --void: #04060c;
   --void-2: #070a13;
   --panel-top: rgba(255, 255, 255, .052);
   --panel-bot: rgba(255, 255, 255, .012);
   --line: rgba(148, 197, 255, .115);
   --line-hi: rgba(148, 197, 255, .28);
+
+  /* ---- Frosted glass ----
+     Four cooperating parts, not one: a translucent fill, a blurred backdrop,
+     a 1px top-lit rim, and an inset highlight along the upper edge. Drop any
+     one and the surface stops reading as glass and starts reading as a flat
+     translucent box - which is exactly what the earlier panels looked like. */
+  --glass-fill: linear-gradient(
+    165deg,
+    rgba(255, 255, 255, .085) 0%,
+    rgba(255, 255, 255, .030) 34%,
+    rgba(255, 255, 255, .012) 100%
+  );
+  --glass-blur: blur(22px) saturate(155%);
+  /* Rim: brighter where light would catch it, dimmer underneath. */
+  --glass-rim: linear-gradient(
+    165deg,
+    rgba(190, 225, 255, .40) 0%,
+    rgba(120, 175, 235, .16) 42%,
+    rgba(90, 140, 200, .07) 100%
+  );
+  --glass-rim-w: 1px;
+  --glass-sheen: inset 0 1px 0 rgba(255, 255, 255, .16),
+                 inset 0 -1px 0 rgba(0, 0, 0, .30);
+  --glass-drop: 0 18px 44px -22px rgba(0, 0, 0, .88),
+                0 2px 10px -6px rgba(0, 0, 0, .70);
+  --glass-drop-hi: 0 26px 62px -22px rgba(0, 0, 0, .94),
+                   0 2px 14px -6px rgba(0, 0, 0, .75);
+  /* Chromatic fringing at the rim, the detail that sells "thick glass". */
+  --glass-fringe: inset 0 0 22px -12px rgba(56, 189, 248, .40);
 
   /* Type */
   --ink: #e9f2ff;
@@ -161,10 +190,27 @@ p { margin: 0; }
 
 .panel, .tile, .cite, .brief, .toast, .chip, .code,
 .ask-field, .dropzone, .badge, .filter-note, .intake-status, .send {
-  background: linear-gradient(180deg, var(--panel-top), var(--panel-bot) 46%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
-  backdrop-filter: blur(16px) saturate(140%);
-  border: 1px solid var(--line);
+  /* The frosted look: translucent fill + blurred backdrop + a rim that is
+     lighter where light catches it. The plain 1px border these elements had
+     before is what made them read as flat translucent boxes. */
+  background: var(--glass-fill);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-sheen), var(--glass-fringe), var(--glass-drop);
+}
+
+/* A gradient border needs two elements or a mask; the rim is faked with an
+   inset ring, which is cheaper and holds up at every border-radius. */
+.panel, .tile, .cite, .brief {
+  position: relative;
+}
+.panel::before, .tile::before {
+  content: ""; position: absolute; inset: 0; border-radius: inherit;
+  padding: var(--glass-rim-w);
+  background: var(--glass-rim);
+  -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  pointer-events: none;
 }
 
 /* ================================================================= shell == */
@@ -214,8 +260,20 @@ p { margin: 0; }
   cursor: pointer; overflow: hidden;
   transition: background .18s, color .18s, border-color .18s;
 }
-.nav-item:hover { background: rgba(255, 255, 255, .04); color: var(--ink); }
+.nav-item:hover { background: rgba(255, 255, 255, .05); color: var(--ink); }
 .nav-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* The active destination becomes a lit glass tab: a rim, a sheen and a raised
+   profile, so it reads as a physical switch rather than a highlight. */
+.nav-item.is-active {
+  background: linear-gradient(150deg, rgba(34, 211, 238, .17), rgba(34, 211, 238, .04) 70%);
+  color: #f1f5f9;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .22),
+    inset 0 0 0 1px rgba(103, 232, 249, .34),
+    inset 0 0 18px -8px rgba(34, 211, 238, .55),
+    0 10px 26px -16px rgba(34, 211, 238, .45);
+}
 .nav-item.is-active {
   background: rgba(34, 211, 238, .09);
   border-color: rgba(34, 211, 238, .26);
@@ -947,6 +1005,9 @@ table.grid tr.empty:hover { background: none; }
   position: relative; overflow: hidden;
   border: 1px solid var(--line); border-radius: var(--r-lg);
   margin-bottom: 18px; isolation: isolate;
+  /* Tall enough for a radar scope to be legible rather than clipped. */
+  min-height: 430px;
+  display: flex; align-items: center;
   background:
     radial-gradient(120% 130% at 12% 0%, rgba(34,211,238,.10), transparent 58%),
     radial-gradient(110% 120% at 92% 100%, rgba(251,191,36,.07), transparent 60%),
@@ -962,12 +1023,19 @@ table.grid tr.empty:hover { background: none; }
 .hero-media video { opacity: 0; transition: opacity .9s ease; }
 .hero-media video.is-live { opacity: .5; }
 .hero-media canvas { opacity: .85; }
-/* A video should not fight the text; the scrim restores contrast. */
+/* Keeps the headline legible without flattening the scope: heavy under the
+   copy on the left, nearly clear on the right where the radar lives. An
+   earlier uniform scrim hid the animation entirely. */
 .hero-scrim {
   position: absolute; inset: 0;
-  background: linear-gradient(100deg,
-    rgba(4,8,15,.94) 0%, rgba(4,8,15,.86) 42%, rgba(4,8,15,.55) 72%,
-    rgba(4,8,15,.38) 100%);
+  background: linear-gradient(98deg,
+    rgba(4,8,15,.95) 0%, rgba(4,8,15,.88) 38%, rgba(4,8,15,.58) 62%,
+    rgba(4,8,15,.22) 84%, rgba(4,8,15,.10) 100%);
+}
+.hero-media video.is-live ~ .hero-scrim {
+  background: linear-gradient(98deg,
+    rgba(4,8,15,.92) 0%, rgba(4,8,15,.82) 40%, rgba(4,8,15,.52) 70%,
+    rgba(4,8,15,.34) 100%);
 }
 
 .hero-body {
@@ -993,8 +1061,10 @@ table.grid tr.empty:hover { background: none; }
 .hero-cta .btn { padding: 10px 20px; font-size: .84rem; }
 
 .hero-stats {
-  display: grid; gap: 14px 30px; margin: 0;
-  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  display: grid; gap: 14px 18px; margin: 0;
+  /* Four explicit tracks: auto-fit wrapped to 3+1 at intermediate widths,
+     which left MODEL stranded on its own row. */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 1px solid var(--line); padding-top: 20px;
 }
 .hero-stats div { min-width: 0; }
@@ -1027,7 +1097,9 @@ table.grid tr.empty:hover { background: none; }
   .hero-title, .hero-lede { animation: none !important; }
 }
 
+@media (max-width: 900px) {
+  .hero-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
 @media (max-width: 720px) {
   .hero-body { padding: 26px 20px; }
-  .hero-stats { grid-template-columns: repeat(2, 1fr); }
 }

@@ -784,11 +784,17 @@ function drawHome() {
 /* ------------------------------------------------------------------ hero -- */
 
 /* Motion for the hero.
-   A canvas rather than a bundled video: it is a few kilobytes instead of a few
-   megabytes, it scales to any display without a re-encode, and it cannot 404.
-   If a real video is dropped at static/media/hero.mp4 it fades in over the top.
-   The canvas pauses whenever the hero is off screen or the tab is hidden, so it
-   costs nothing while an operator works in Query. */
+
+   A defence-coded tactical scope rather than a generic particle field: range
+   rings, a bearing scale, a rotating sweep, and contacts that brighten as the
+   beam passes over them and then decay. Contacts are the corpus documents, so
+   the motion is descriptive rather than decorative - the sweep literally
+   surveys the indexed material.
+
+   Drawn on a canvas, not a bundled video: a few kilobytes instead of a few
+   megabytes, crisp at any display density, and it cannot 404 mid-recording. If
+   a real video is dropped at static/media/hero.mp4 it fades in over the top.
+   The canvas pauses whenever the hero is off screen or the tab is hidden. */
 function startHero() {
   const canvas = $("hero-canvas");
   const video = $("hero-video");
@@ -804,73 +810,156 @@ function startHero() {
   }
 
   if (reduceMotion.matches) {
-    // Draw one static frame so the hero is never blank.
-    paintFrame(canvas, []);
+    // One static frame, so the hero is never blank.
+    paintScope(0, 0, []);
     return;
   }
 
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-
-  // Nodes drift and pulses travel between them: a quiet sense of a live
-  // network rather than a decorative loop.
-  const nodes = Array.from({ length: 26 }, (_, i) => ({
-    x: Math.random(),
-    y: Math.random(),
-    vx: (Math.random() - 0.5) * 0.00022,
-    vy: (Math.random() - 0.5) * 0.00022,
-    r: 1 + Math.random() * 1.9,
-    hue: i % 5 === 0 ? "190,245,255" : "56,189,248",
-  }));
-  const pulses = Array.from({ length: 7 }, () => ({
-    from: 0, to: 0, t: Math.random(), speed: 0.0006 + Math.random() * 0.0009,
+  /* Contacts sit at a fixed polar position. Their `level` is how brightly they
+     currently return: 0 while dark, up to 1 as the beam passes over them. */
+  const CONTACTS = Array.from({ length: 14 }, (_, i) => ({
+    // Deterministic scatter, so the scope looks the same on every reload.
+    bearing: ((i * 137.5) % 360) * (Math.PI / 180),
+    range: 0.20 + ((i * 0.37) % 0.72),
+    level: 0,
+    drift: (((i % 5) - 2) * 0.000018),
+    kind: i % 4, // 0 unit, 1 track, 2 site, 3 unknown
   }));
 
-  function paintFrame(target, pulsesToDraw) {
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = target.clientWidth || target.offsetWidth;
-    const h = target.clientHeight || target.offsetHeight;
-    if (!w || !h) return;
-    if (target.width !== Math.round(w * dpr) || target.height !== Math.round(h * dpr)) {
-      target.width = Math.round(w * dpr);
-      target.height = Math.round(h * dpr);
+  let sweep = 0;
+
+  function paintScope(w, h, dpr) {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const cw = canvas.clientWidth || canvas.offsetWidth;
+    const ch = canvas.clientHeight || canvas.offsetHeight;
+    if (!cw || !ch) return;
+    if (canvas.width !== Math.round(cw * dpr) || canvas.height !== Math.round(ch * dpr)) {
+      canvas.width = Math.round(cw * dpr);
+      canvas.height = Math.round(ch * dpr);
     }
-    const c = target.getContext("2d");
-    c.setTransform(dpr, 0, 0, dpr, 0, 0);
-    c.clearRect(0, 0, w, h);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
 
-    // A faint measurement grid, matching the shell's backdrop.
-    c.strokeStyle = "rgba(56,189,248,0.055)";
-    c.lineWidth = 1;
-    const step = Math.max(38, Math.round(w / 22));
-    c.beginPath();
-    for (let x = 0; x <= w; x += step) { c.moveTo(x, 0); c.lineTo(x, h); }
-    for (let y = 0; y <= h; y += step) { c.moveTo(0, y); c.lineTo(w, y); }
-    c.stroke();
+    // Scope sits right of the copy. The radius is derived from the *height* as
+    // well as the width: the hero is a short, wide band, so a radius sized only
+    // on width put most of the graticule outside the panel and clipped it.
+    const cx = cw * 0.80;
+    const cy = ch * 0.46;
+    const R = Math.min(cw * 0.30, ch * 0.44);
 
-    const pts = pulsesToDraw.map((p) => [nodes[p.from], nodes[p.to]]).filter((e) => e[0] && e[1]);
-
-    c.strokeStyle = "rgba(34,211,238,0.20)";
-    c.beginPath();
-    for (const [a, b] of pts) {
-      c.moveTo(a.x * w, a.y * h);
-      c.lineTo(b.x * w, b.y * h);
+    // --- graticule: range rings and bearing spokes ---
+    ctx.strokeStyle = "rgba(56,189,248,0.16)";
+    ctx.lineWidth = 1;
+    for (let i = 1; i <= 4; i++) {
+      ctx.beginPath();
+      ctx.arc(cx, cy, (R * i) / 4, 0, Math.PI * 2);
+      ctx.stroke();
     }
-    c.stroke();
+    ctx.beginPath();
+    for (let i = 0; i < 12; i++) {
+      const a = (i * Math.PI) / 6;
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+    }
+    ctx.stroke();
 
-    for (const n of nodes) {
-      c.beginPath();
-      c.arc(n.x * w, n.y * h, n.r, 0, Math.PI * 2);
-      c.fillStyle = `rgba(${n.hue},0.75)`;
-      c.fill();
+    // --- range shading: the beam's trailing wedge ---
+    const wedge = 0.62;
+    const grad = ctx.createConicGradient
+      ? ctx.createConicGradient(sweep - wedge, cx, cy)
+      : null;
+    if (grad) {
+      grad.addColorStop(0, "rgba(34,211,238,0)");
+      grad.addColorStop(Math.max(0.001, 1 - wedge / (Math.PI * 2)), "rgba(34,211,238,0.16)");
+      grad.addColorStop(1, "rgba(34,211,238,0.30)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.fill();
     }
 
-    for (const [a, b] of pts) {
-      const t = 1; // head of the pulse
-      c.beginPath();
-      c.arc(a.x * w + (b.x - a.x) * w * t, a.y * h + (b.y - a.y) * h * t, 2.1, 0, Math.PI * 2);
-      c.fillStyle = "rgba(125,211,252,0.95)";
-      c.fill();
+    // --- the sweep line itself ---
+    const beam = ctx.createLinearGradient(cx, cy, cx + Math.cos(sweep) * R, cy + Math.sin(sweep) * R);
+    beam.addColorStop(0, "rgba(125,211,252,0.85)");
+    beam.addColorStop(1, "rgba(125,211,252,0)");
+    ctx.strokeStyle = beam;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(sweep) * R, cy + Math.sin(sweep) * R);
+    ctx.stroke();
+
+    // --- contacts ---
+    for (const k of CONTACTS) {
+      const a = k.bearing + sweep * 0; // position is world-fixed
+      const x = cx + Math.cos(a) * k.range * R;
+      const y = cy + Math.sin(a) * k.range * R;
+      const lit = Math.max(k.level, 0.12);
+      const size = 2.1 + lit * 2.4;
+
+      // Return halo, strongest just after the beam passed.
+      if (lit > 0.02) {
+        const halo = ctx.createRadialGradient(x, y, 0, x, y, 13 + lit * 16);
+        halo.addColorStop(0, `rgba(125,211,252,${(lit * 0.42).toFixed(3)})`);
+        halo.addColorStop(1, "rgba(125,211,252,0)");
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(x, y, 13 + lit * 16, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fillStyle = k.kind === 3
+        ? `rgba(251,191,36,${(0.30 + lit * 0.7).toFixed(3)})`  // unknown: amber
+        : `rgba(125,211,252,${(0.30 + lit * 0.7).toFixed(3)})`;
+      ctx.fill();
+
+      // A track that has been illuminated leaves a decaying vector behind it.
+      if (lit > 0.5) {
+        ctx.strokeStyle = `rgba(125,211,252,${((lit - 0.5) * 0.5).toFixed(3)})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(
+          cx + Math.cos(a) * Math.max(0, k.range * R - 22 * lit),
+          cy + Math.sin(a) * Math.max(0, k.range * R - 22 * lit)
+        );
+        ctx.stroke();
+      }
+    }
+
+    // --- centre pip ---
+    ctx.beginPath();
+    ctx.arc(cx, cy, 2.6, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(233,242,255,0.9)";
+    ctx.fill();
+
+    // --- bearing ticks around the rim ---
+    ctx.strokeStyle = "rgba(125,211,252,0.22)";
+    for (let i = 0; i < 36; i++) {
+      const a = (i * Math.PI) / 18;
+      const major = i % 3 === 0;
+      const r0 = R - (major ? 9 : 5);
+      ctx.lineWidth = major ? 1.3 : 0.8;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * r0, cy + Math.sin(a) * r0);
+      ctx.lineTo(cx + Math.cos(a) * R, cy + Math.sin(a) * R);
+      ctx.stroke();
+    }
+  }
+
+  function frameContacts(dt) {
+    // Angular difference between each contact's bearing and the beam, wrapped.
+    for (const k of CONTACTS) {
+      let d = ((sweep - k.bearing) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+      if (d < 0.9) {
+        k.level = Math.min(1, k.level + dt / 260);          // beam illuminates
+      } else {
+        k.level = Math.max(0, k.level - dt / 5200);          // then decays
+      }
+      k.bearing += k.drift * dt;                             // slow track drift
     }
   }
 
@@ -880,21 +969,9 @@ function startHero() {
   function frame(now) {
     const dt = Math.min(now - last, 64);
     last = now;
-
-    for (const n of nodes) {
-      n.x += n.vx * dt; n.y += n.vy * dt;
-      if (n.x < -0.02) n.x = 1.02; if (n.x > 1.02) n.x = -0.02;
-      if (n.y < -0.02) n.y = 1.02; if (n.y > 1.02) n.y = -0.02;
-    }
-    for (const p of pulses) {
-      p.t += p.speed * dt;
-      if (p.t >= 1) {
-        p.t = 0;
-        p.from = Math.floor(Math.random() * nodes.length);
-        p.to = Math.floor(Math.random() * nodes.length);
-      }
-    }
-    paintFrame(canvas, pulses);
+    sweep += dt * 0.00042;                       // ~15s per revolution
+    frameContacts(dt);
+    paintScope(0, 0, Math.min(window.devicePixelRatio || 1, 2));
     raf = requestAnimationFrame(frame);
   }
 
@@ -914,7 +991,10 @@ function startHero() {
     new IntersectionObserver((entries) => {
       for (const entry of entries) {
         if (entry.isIntersecting) start();
-        else { stop(); paintFrame(canvas, pulses); }
+        else {
+          stop();
+          paintScope(0, 0, Math.min(window.devicePixelRatio || 1, 2));
+        }
       }
     }, { threshold: 0.05 }).observe(hero);
   } else {
@@ -924,7 +1004,8 @@ function startHero() {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stop(); else start();
   });
-  window.addEventListener("resize", () => paintFrame(canvas, pulses));
+  window.addEventListener("resize", () =>
+    paintScope(0, 0, Math.min(window.devicePixelRatio || 1, 2)));
   start();
 }
 

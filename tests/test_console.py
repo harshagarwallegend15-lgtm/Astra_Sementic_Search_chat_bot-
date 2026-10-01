@@ -281,6 +281,96 @@ def test_a_selected_file_is_named_on_screen(page):
     assert "base.length > 64" in script
 
 
+def test_the_hero_motion_is_defence_coded_not_generic():
+    """The hero should read as a tactical scope, not a particle field.
+
+    It began as drifting nodes and pulses, which could have belonged to any
+    product page. The defence language is the point: a rotating beam, range
+    rings, bearing spokes and contacts that brighten as they are illuminated.
+    """
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    hero = script.split("function startHero")[1].split("\nfunction showView")[0]
+
+    for element in (
+        "createConicGradient",  # the rotating beam
+        "createRadialGradient",  # a contact's return halo
+        "CONTACTS",
+    ):
+        assert element in hero, f"{element} is missing from the hero animation"
+
+    # Range rings and bearing spokes.
+    assert hero.count("ctx.arc") >= 2, "no range rings drawn"
+    assert "ctx.moveTo(cx, cy)" in hero, "no bearing spokes drawn"
+
+    # Contacts must decay after the beam passes, or they just glow forever.
+    assert "k.level = Math.min(1" in hero, "contacts never illuminate"
+    assert "k.level = Math.max(0" in hero, "contacts never decay"
+
+    # An amber contact type distinguishes an unknown return from a friendly.
+    assert "k.kind === 3" in hero and "251,191,36" in hero, (
+        "no unknown-contact colouring"
+    )
+
+
+def test_the_glass_system_is_built_from_cooperating_parts(page):
+    """A single translucent fill does not read as glass.
+
+    Frosted surfaces need a translucent fill, a blurred backdrop, a rim that is
+    lighter where light catches it, and an inset sheen along the top edge. The
+    panels previously had only a flat fill plus a 1px border, which is why they
+    looked like flat translucent boxes.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    for token in (
+        "--glass-fill",
+        "--glass-blur",
+        "--glass-rim",
+        "--glass-sheen",
+        "--glass-drop",
+    ):
+        assert token in css, f"the {token} token is missing"
+        assert f"{token}:" in css, f"{token} is referenced but never defined"
+
+    rule = css.split(".panel, .tile, .cite, .brief, .toast, .chip, .code,")[1]
+    rule = rule.split("}")[0]
+    assert "var(--glass-fill)" in rule, "panels do not use the glass fill"
+    assert "var(--glass-blur)" in rule, "panels are not frosted"
+    assert "var(--glass-sheen)" in rule, "panels have no inset sheen"
+    assert "var(--glass-drop)" in rule, "panels cast no depth shadow"
+
+    # The rim needs a mask trick, since a gradient cannot be a border.
+    assert "-webkit-mask" in css and "content-box" in css, (
+        "the gradient rim is not actually masked to the border"
+    )
+
+
+def test_the_hero_scop_does_not_flatten_the_animation(page):
+    """The scrim has to protect the copy without hiding the radar.
+
+    A single uniform scrim at the opacity that makes the headline readable
+    rendered the scope invisible, which defeated the point of drawing it.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    scrim = css.split(".hero-scrim {")[1].split("}")[0]
+    stops = scrim.count("rgba(4,8,15")
+    assert stops >= 4, "the scrim is not a gradient across the hero"
+    # It must get materially lighter toward the right, where the scope is.
+    opacities = [float(x) for x in re.findall(r"rgba\(4,8,15,\.(\d+)\)", scrim)]
+    assert opacities[-1] < opacities[0] - 0.5, (
+        "the scrim does not lighten over the scope, so it stays hidden"
+    )
+
+
+def test_the_hero_covers_all_four_stats_on_one_row():
+    """auto-fit wrapped the stats to 3+1, stranding MODEL on its own row."""
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    # Split on the declaration block, not the first `}`: `minmax(0, 1fr)`
+    # contains a brace, so a naive split truncates before grid-template-columns.
+    stats = css.split(".hero-stats {")[1].split("grid-template-columns")[1]
+    assert "repeat(4," in stats, "the hero stats are not four explicit tracks"
+    assert "auto-fit" not in stats, "auto-fit still wraps the stats"
+
+
 def test_the_donut_centre_figure_is_readable_on_a_dark_panel():
     """Regression: the count was drawn #1a202c on a near-black card.
 
