@@ -65,11 +65,15 @@ def main() -> int:
     written = []
     try:
         for view in VIEWS:
+            # Matched by prefix: cache-busting appended ?v=<hash>, and a bare
+            # tag match now fails silently, leaving the harness uninstalled.
+            open_tag = index.find('<script src="/static/app.js')
+            if open_tag == -1:
+                print("app.js is not referenced from index.html", file=sys.stderr)
+                return 1
+            close = index.index("</script>", open_tag) + len("</script>")
             probe.write_text(
-                index.replace(
-                    '<script src="/static/app.js"></script>',
-                    '<script src="/static/app.js"></script>' + harness(view),
-                ),
+                index[:close] + harness(view) + index[close:],
                 encoding="utf-8",
             )
             with tempfile.TemporaryDirectory() as tmp:

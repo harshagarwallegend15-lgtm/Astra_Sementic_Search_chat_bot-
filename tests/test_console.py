@@ -9,6 +9,7 @@ still wired to ids that no longer existed.
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -401,11 +402,12 @@ def test_the_hero_covers_all_four_stats_on_one_row():
 
 
 def test_the_backdrop_artwork_is_present_and_local(page):
-    """Four generated SVG layers, all repo-local.
+    """Four generated SVG layers plus six defence photographs, all local.
 
-    The generator exists because raster defence photography could not be
-    sourced, and a remote CDN asset would be a single point of failure during a
-    recorded demo. SVGs cost kilobytes and never 404.
+    The generator covers the instrument chrome. The photographs are US
+    government releases that scripts/fetch_backdrop_photos.py verifies and
+    grades on download, so they ship in the repo rather than from a CDN,
+    which would be a single point of failure during a recorded demo.
     """
     css_path = (STATIC / "styles.css").read_text(encoding="utf-8")
     # filename stem -> the class that carries it. The stems are hyphenated but
@@ -415,43 +417,33 @@ def test_the_backdrop_artwork_is_present_and_local(page):
         "coord-grid": "map-grid",
         "sector-arcs": "map-sectors",
         "schematic": "map-schematic",
+        "scene-abrams": "map-photo p0",
+        "scene-armour-column": "map-photo p1",
+        "scene-briefing": "map-photo p2",
+        "scene-radar": "map-photo p3",
+        "scene-artillery": "map-photo p4",
+        "scene-observation": "map-photo p5",
     }
     for stem, cls in layers.items():
         assert cls in page, f"the {stem} layer is missing"
-        assert f"/static/media/{stem}.svg" in css_path, f"{stem} is not wired to CSS"
+        assert f"/static/media/{stem}." in css_path, f"{stem} is not wired to CSS"
 
     assert "http://" not in _media_block(page), "a backdrop layer points at a CDN"
 
     # The artwork must actually exist on disk, or the layers render empty.
     media = STATIC / "media"
     for stem in layers:
-        path = media / f"{stem}.svg"
-        assert path.is_file(), f"{path.name} is referenced but not generated"
-        text = path.read_text(encoding="utf-8")
-        assert text.lstrip().startswith("<svg"), f"{path.name} is not valid SVG"
-        assert path.stat().st_size < 400_000, f"{path.name} is unexpectedly large"
-    # filename stem -> the class that carries it. The stems are hyphenated but
-    # the classes are not, so they cannot be derived mechanically.
-    layers = {
-        "terrain-contours": "map-contours",
-        "coord-grid": "map-grid",
-        "sector-arcs": "map-sectors",
-        "schematic": "map-schematic",
-    }
-    for stem, cls in layers.items():
-        assert cls in page, f"the {stem} layer is missing"
-        assert f"/static/media/{stem}.svg" in css_path, f"{stem} is not wired to CSS"
-
-    assert "http://" not in _media_block(page), "a backdrop layer points at a CDN"
-
-    # The artwork must actually exist on disk, or the layers render empty.
-    media = STATIC / "media"
-    for stem in layers:
-        path = media / f"{stem}.svg"
-        assert path.is_file(), f"{path.name} is referenced but not generated"
-        text = path.read_text(encoding="utf-8")
-        assert text.lstrip().startswith("<svg"), f"{path.name} is not valid SVG"
-        assert path.stat().st_size < 400_000, f"{path.name} is unexpectedly large"
+        matches = [media / f"{stem}.svg", media / f"{stem}.jpg"]
+        path = next((p for p in matches if p.is_file()), None)
+        assert path is not None, f"{stem} is referenced but not on disk"
+        if path.suffix == ".svg":
+            text = path.read_text(encoding="utf-8")
+            assert text.lstrip().startswith("<svg"), f"{path.name} is not valid SVG"
+            assert path.stat().st_size < 400_000, f"{path.name} is unexpectedly large"
+        else:
+            # A backdrop photograph that costs a megabyte is a backdrop that
+            # arrives after the demo has moved on.
+            assert path.stat().st_size < 500_000, f"{path.name} is too heavy"
 
 
 def _media_block(page: str) -> str:
@@ -474,6 +466,133 @@ def test_backdrop_layers_drift_at_different_speeds():
     layer_rule = css.split(".map-layer {")[1].split("}")[0]
     assert "inset: -15%" in layer_rule or "-15%" in layer_rule, (
         "the layers are not oversized, so drifting exposes the edge"
+    )
+
+
+def _keyframes(css: str, name: str) -> str:
+    start = css.index(f"@keyframes {name}")
+    depth = 0
+    for index in range(css.index("{", start), len(css)):
+        if css[index] == "{":
+            depth += 1
+        elif css[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return css[start : index + 1]
+    raise AssertionError(f"@keyframes {name} is not closed")
+
+
+def test_the_drift_moves_fast_enough_to_be_seen():
+    """A drift nobody can perceive is the same as no drift.
+
+    The first pass ran a few percent over two minutes, which works out to
+    about one pixel per second on a laptop screen. The backdrop was reported
+    as motionless for exactly that reason. This floors the on-screen speed so
+    the same regression cannot be reintroduced by "slow it down a bit".
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    # The layer element is 130% of the viewport, so a translate of A% of that
+    # element covers A * 1.3% of a 1400px screen.
+    screen = 1400
+    for layer in ("contours", "grid", "sectors", "schematic"):
+        duration = int(
+            re.search(rf"animation:\s*drift-{layer}\s+(\d+)s", css).group(1)
+        )
+        points = [
+            (float(x), float(y))
+            for x, y in re.findall(
+                r"translate3d\((-?[\d.]+)%,\s*(-?[\d.]+)%", _keyframes(css, f"drift-{layer}")
+            )
+        ]
+        assert len(points) >= 2, f"drift-{layer} does not move"
+        travel = math.hypot(points[-1][0] - points[0][0], points[-1][1] - points[0][1])
+        px_per_second = travel * 1.3 * screen / 100 / duration
+        assert px_per_second >= 2.0, (
+            f"drift-{layer} moves at {px_per_second:.1f}px/s and reads as static"
+        )
+
+
+def _frame_declarations(css: str, index: int) -> str:
+    """The per-frame custom properties, matched as a top-level rule.
+
+    Splitting on '.p0 {' would find '.map-photo.p0 {' first, which is the
+    background-image rule and carries none of the variables.
+    """
+    match = re.search(rf"^\.p{index} \{{(.*?)\}}", css, re.S | re.M)
+    assert match, f"frame {index} has no rule of its own"
+    return match.group(1)
+
+
+def test_the_photographs_dissolve_continuously_and_keep_pushing():
+    """The home page must carry real moving imagery, not only line work.
+
+    Six frames, one sixth of the loop each, dissolving with no hold: that is
+    what keeps total opacity flat, so the sequence cannot flash black between
+    frames or flare where two of them overlap. A separate transform animation
+    is what keeps something moving when only part of the reel is at full
+    strength.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    rule = css.split(".map-photo {")[1].split("}")[0]
+    assert "dissolve 120s linear infinite" in rule, "the dissolve has no linear ramp"
+    assert "push 120s linear infinite" in rule, "the frames are not always pushing"
+    assert "calc(var(--i) * 20s)" in rule, (
+        "the frames are not staggered by a sixth of the loop"
+    )
+    assert "background-size: cover" in rule, "the frame does not fill the viewport"
+    assert "mask-image" in rule, "the frame edge would show as a hard rectangle"
+
+    dissolve = _keyframes(css, "dissolve")
+    # Rises over the first sixth, falls over the next: a 40s window against a
+    # 20s stagger, so the outgoing and incoming frames complement each other
+    # and total opacity never dips at the handover.
+    assert "16.667%" in dissolve and "33.333%" in dissolve, (
+        "the dissolve window is not twice the stagger, so it will dip or flare"
+    )
+    assert dissolve.count("opacity: 0") >= 2, "the dissolve has no fade-out"
+
+    push = _keyframes(css, "push")
+    scales = [float(s) for s in re.findall(r"scale\(([\d.]+)\)", push)]
+    assert max(scales) - min(scales) >= 0.12, "the push-in is too small to see"
+
+    # Every frame needs its own slot and its own drift direction, otherwise
+    # the reel either runs in lockstep or pans as one block.
+    seen = set()
+    for index in range(6):
+        declarations = _frame_declarations(css, index)
+        assert f"--i: {index};" in declarations, f"frame {index} has no slot"
+        assert "--peak:" in declarations, f"frame {index} has no peak opacity"
+        assert "--ax:" in declarations, f"frame {index} has no drift direction"
+        seen.add(re.search(r"--ax:\s*(-?[\d.]+)%", declarations).group(1))
+    assert len(seen) > 1, "every frame drifts the same way"
+
+
+def test_the_photographs_are_bright_enough_to_see():
+    """An earlier pass graded the frames to near-black duotone and they read as
+    texture rather than as photographs. The peak opacity has to stay in a band
+    that is clearly visible while still sitting behind the copy.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    for index in range(6):
+        declarations = _frame_declarations(css, index)
+        peak = float("0." + re.search(r"--peak:\s*\.(\d+)", declarations).group(1))
+        assert 0.40 <= peak <= 0.62, f"frame {index} peaks at {peak}"
+
+
+def test_the_photographs_stop_under_reduced_motion():
+    """animation: none leaves the frames at their 0% keyframe, which is opacity 0.
+
+    Without an explicit override a reduced-motion visitor gets no photograph at
+    all, and freezing all six would stack them on top of each other.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    marker = "@media (prefers-reduced-motion: reduce)"
+    blocks = "\n".join(css.split(marker)[1:])
+    assert ".map-photo { opacity: 0; }" in blocks, (
+        "the dissolving frames would all stack when frozen"
+    )
+    assert ".map-photo.p0 { opacity: .34; }" in blocks, (
+        "no still photograph is held for reduced motion"
     )
 
 

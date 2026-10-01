@@ -1,4 +1,4 @@
-﻿/* ASTRA INTEL - corpus operations console
+/* ASTRA INTEL - corpus operations console
    -----------------------------------------------------------------------
    Design language: a command deck.
 
@@ -42,13 +42,16 @@
      a 1px top-lit rim, and an inset highlight along the upper edge. Drop any
      one and the surface stops reading as glass and starts reading as a flat
      translucent box - which is exactly what the earlier panels looked like. */
+  /* Lighter than before on purpose: the moving photography is the point of
+     the page, and an opaque panel hides it. Still dark enough for white body
+     copy to hold contrast, because the frames behind are underexposed. */
   --glass-fill: linear-gradient(
     165deg,
-    rgba(14,22,38,.72) 0%,
-    rgba(11,18,32,.62) 34%,
-    rgba(9,15,27,.58) 100%
+    rgba(13,21,36,.50) 0%,
+    rgba(11,18,32,.40) 34%,
+    rgba(9,15,27,.36) 100%
   );
-  --glass-blur: blur(22px) saturate(155%);
+  --glass-blur: blur(18px) saturate(160%);
   /* Rim: brighter where light would catch it, dimmer underneath. The outline
      is intentionally prominent now: the backdrop artwork needs a controlled
      edge, or the panel dissolves into it. */
@@ -1111,6 +1114,80 @@ table.grid tr.empty:hover { background: none; }
 
 /* ===================================================== defence backdrop == */
 
+/* Colour defence photography: tanks, an armour column, a briefing room, a
+   radar operator, a gun crew and a forward observation post. Six frames that
+   dissolve into one another while every frame keeps pushing in.
+
+   The dissolve is deliberately a bare linear ramp with no hold. Each frame
+   owns one sixth of the loop, so at any instant some frames are fading up
+   while others fade down and the total opacity never dips or spikes - no
+   black flash between images, no brightening where two frames overlap. The
+   push is a separate animation on the same clock, so motion never stops even
+   though a given frame is only half-visible.
+
+   Declared after .map-layer so its wider inset and no-repeat win at equal
+   specificity. */
+.map-photo {
+  inset: -22%;
+  background-repeat: no-repeat;
+  background-position: 50% 50%;
+  background-size: cover;
+  opacity: 0;
+  /* Dissolve the frame into the page so its edge is never a visible rectangle. */
+  mask-image: radial-gradient(118% 105% at 50% 44%, #000 34%, transparent 78%);
+  -webkit-mask-image: radial-gradient(118% 105% at 50% 44%, #000 34%, transparent 78%);
+  /* Positive stagger: each frame starts one sixth of the loop later than the
+     last, so frame N is fading out exactly as frame N+1 fades in. With a 40s
+     visible window against a 20s stagger the two ramps complement rather than
+     overlap, so total opacity never dips or spikes and the loop closes. */
+  animation: dissolve 120s linear infinite, push 120s linear infinite;
+  animation-delay: calc(var(--i) * 20s), calc(var(--i) * 20s);
+}
+
+.map-photo.p0 { background-image: url("/static/media/scene-abrams.jpg"); }
+.map-photo.p1 { background-image: url("/static/media/scene-armour-column.jpg"); }
+.map-photo.p2 { background-image: url("/static/media/scene-briefing.jpg"); }
+.map-photo.p3 { background-image: url("/static/media/scene-radar.jpg"); }
+.map-photo.p4 { background-image: url("/static/media/scene-artillery.jpg"); }
+.map-photo.p5 { background-image: url("/static/media/scene-observation.jpg"); }
+
+/* Direction alternates so the sequence does not drift as one long pan. Peaks
+   are per frame, not uniform: a daylight tank in a field and a night-lit radar
+   room photographed by the same camera would need different exposure to read
+   at the same weight. */
+.p0 { --i: 0; --peak: .55; --ax: -3.4%; --ay: 2.2%; --bx: 3.6%; --by: -2.4%; }
+.p1 { --i: 1; --peak: .56; --ax:  3.2%; --ay: -2.6%; --bx: -3.6%; --by: 2.8%; }
+.p2 { --i: 2; --peak: .46; --ax: -2.8%; --ay: -2.0%; --bx: 3.0%; --by: 2.6%; }
+.p3 { --i: 3; --peak: .60; --ax:  3.6%; --ay:  2.4%; --bx: -3.0%; --by: -2.2%; }
+.p4 { --i: 4; --peak: .54; --ax: -3.0%; --ay:  2.8%; --bx: 3.4%; --by: -2.0%; }
+.p5 { --i: 5; --peak: .56; --ax:  2.8%; --ay: -2.2%; --bx: -3.4%; --by: 2.4%; }
+
+/* Visible window is 40s of a 120s loop, so the frame that is leaving and the
+   frame arriving are always on screen together. */
+@keyframes dissolve {
+  0%      { opacity: 0; }
+  16.667% { opacity: var(--peak); }
+  33.333% { opacity: 0; }
+  100%    { opacity: 0; }
+}
+@keyframes push {
+  from { transform: translate3d(var(--ax), var(--ay), 0) scale(1.04); }
+  to   { transform: translate3d(var(--bx), var(--by), 0) scale(1.19); }
+}
+
+/* Sits above the photographs and below the line work. A frame bright enough to
+   read as a photograph is also bright enough to fog the readouts drawn on
+   top of it, and the console is the product here, not the wallpaper. */
+.map-scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(4, 8, 16, .48) 0%, rgba(4, 8, 16, .16) 34%,
+                    rgba(4, 8, 16, .24) 100%),
+    radial-gradient(120% 90% at 50% 8%, rgba(4, 8, 16, .34) 0%, transparent 62%);
+}
+
 /* Generated SVG layers, drifted at different speeds. Each is oversized well
    past the viewport so a translate never exposes an edge. Duration and
    distance deliberately differ per layer: that mismatch is the parallax, and
@@ -1129,52 +1206,58 @@ table.grid tr.empty:hover { background: none; }
   background-image: url("/static/media/terrain-contours.svg");
   opacity: .34;
   mix-blend-mode: screen;
-  animation: drift-contours 84s linear infinite alternate;
+  animation: drift-contours 38s linear infinite alternate;
 }
 .map-grid {
   background-image: url("/static/media/coord-grid.svg");
   opacity: .18;
   mix-blend-mode: screen;
-  animation: drift-grid 108s linear infinite alternate;
+  animation: drift-grid 52s linear infinite alternate;
 }
 .map-sectors {
   background-image: url("/static/media/sector-arcs.svg");
   opacity: .27;
   mix-blend-mode: screen;
-  animation: drift-sectors 62s linear infinite alternate;
+  animation: drift-sectors 28s linear infinite alternate;
 }
 .map-schematic {
   background-image: url("/static/media/schematic.svg");
   opacity: .17;
   mix-blend-mode: screen;
-  animation: drift-schematic 138s linear infinite alternate;
+  animation: drift-schematic 64s linear infinite alternate;
 }
 
-/* The drift should be noticeable within a few seconds while remaining slow.
-   Each layer covers much more area than the viewport, so these few-percent
-   translations cannot expose an edge. */
+/* These used to travel a few percent over two minutes, which works out to
+   roughly one pixel per second: technically moving, invisible in practice.
+   The same amplitude now completes in half a minute, so the parallax reads
+   within a couple of seconds of the page settling. Travel stays under 8% of
+   an element that is 130% of the viewport, so no edge can be exposed. */
 @keyframes drift-contours {
-  from { transform: translate3d(-2.4%, 1.8%, 0) scale(1.02); }
-  to   { transform: translate3d(3.4%, -2.6%, 0) scale(1.05); }
+  from { transform: translate3d(-5.2%, 3.6%, 0) scale(1.02); }
+  to   { transform: translate3d(5.4%, -4.4%, 0) scale(1.07); }
 }
 @keyframes drift-grid {
-  from { transform: translate3d(2.8%, 1.4%, 0); }
-  to   { transform: translate3d(-3.4%, -2.8%, 0); }
+  from { transform: translate3d(5.6%, 3.2%, 0); }
+  to   { transform: translate3d(-5.8%, -4.6%, 0); }
 }
 @keyframes drift-sectors {
-  from { transform: translate3d(-3.0%, 2.8%, 0) scale(1.03); }
-  to   { transform: translate3d(3.8%, -2.4%, 0) scale(1.06); }
+  from { transform: translate3d(-6.0%, 4.8%, 0) scale(1.03); }
+  to   { transform: translate3d(6.2%, -4.2%, 0) scale(1.08); }
 }
 @keyframes drift-schematic {
-  from { transform: translate3d(2.2%, 2.4%, 0); }
-  to   { transform: translate3d(-2.8%, -2.2%, 0); }
+  from { transform: translate3d(4.4%, 4.2%, 0); }
+  to   { transform: translate3d(-5.0%, -4.4%, 0); }
 }
 
 /* Slow drifting imagery is exactly what a motion-sensitive visitor cannot opt
-   out of, so the whole map stack freezes rather than merely slowing. */
+   out of, so the whole map stack freezes rather than merely slowing. One
+   photograph is held instead of all six, because freezing the dissolve would
+   otherwise stack every frame on top of the others. */
 @media (prefers-reduced-motion: reduce) {
   .map-layer { animation: none !important; }
   .map-contours, .map-grid, .map-sectors, .map-schematic { opacity: .16; }
+  .map-photo { opacity: 0; }
+  .map-photo.p0 { opacity: .34; }
 }
 
 /* ============================================================== borders == */

@@ -53,13 +53,15 @@ PROBE = """
 """
 
 probe = PROJECT / "static" / "_hero_probe.html"
+_index = (PROJECT / "static" / "index.html").read_text(encoding="utf-8")
+# Matched by prefix: cache-busting appended ?v=<hash> to the script tag, and
+# matching the bare tag now fails silently, so the probe never installs.
+_open = _index.find('<script src="/static/app.js')
+if _open == -1:
+    raise SystemExit("app.js is not referenced from index.html")
+_close = _index.index("</script>", _open) + len("</script>")
 probe.write_text(
-    (PROJECT / "static" / "index.html")
-    .read_text(encoding="utf-8")
-    .replace(
-        '<script src="/static/app.js"></script>',
-        f'<script src="/static/app.js"></script><script>{PROBE}</script>',
-    ),
+    _index[:_close] + f"<script>{PROBE}</script>" + _index[_close:],
     encoding="utf-8",
 )
 
