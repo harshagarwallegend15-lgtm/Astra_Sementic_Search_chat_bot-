@@ -254,6 +254,9 @@
             </span>
             <button type="button" class="btn btn-ghost" id="upload-browse">Browse files</button>
           </div>
+          <!-- Without this the operator only ever saw "1 file · 1.2 MB" and
+               had no way to confirm *which* file they had picked. -->
+          <ul class="file-list" id="upload-list" hidden></ul>
           <button class="btn btn-primary" type="submit" id="upload-submit">Ingest</button>
         </form>
         <div class="intake-status" id="upload-note">No batch ingested in this session.</div>

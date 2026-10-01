@@ -193,6 +193,32 @@ def test_intake_reports_progress_and_failure_on_screen(page):
         assert f".intake-status.is-{kind}" in css, f"no style for is-{kind}"
 
 
+def test_a_selected_file_is_named_on_screen(page):
+    """Regression: the operator never saw which file they had picked.
+
+    The selection line reported only a count and a size - "1 file · 1.2 MB" -
+    so a file input that silently failed to open, or a drop that landed on the
+    wrong document, looked identical to success. The batch is now listed by
+    name.
+    """
+    assert 'id="upload-list"' in page, "no element lists the selected files"
+
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert "function renderFileList" in script
+    renderer = script.split("function renderFileList")[1].split("\n}")[0]
+    assert "f.name" in renderer, "the list never reads the file name"
+    assert "shortName" in renderer, "the name is not shortened for display"
+    assert "file-name" in renderer, "the name has no dedicated element"
+
+    # It must be called on selection, and cleared afterwards.
+    assert script.count("renderFileList(") >= 3, (
+        "renderFileList must be wired to the change handler, to the empty "
+        "case, and to the post-ingest reset"
+    )
+    # A 64-character name would wrap the row, so long names are truncated.
+    assert "base.length > 64" in script
+
+
 def test_the_donut_centre_figure_is_readable_on_a_dark_panel():
     """Regression: the count was drawn #1a202c on a near-black card.
 

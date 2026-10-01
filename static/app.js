@@ -572,29 +572,72 @@ function intakeStatus(text, kind = "") {
 
 /* Preflight the batch against the same limits the server enforces, so an
    oversized or over-count upload fails in the browser with a specific message
-   instead of round-tripping and returning a bare 400. */
+   instead of round-tripping and returning a bare 400.
+
+   `files` arrives as a FileList, which is array-like but has no `.filter()`. The
+   previous version called it anyway, so this threw on every real selection:
+   the status line silently kept its default text and the submit handler died
+   before it ever reached fetch. The whole intake section looked dead. Normalise
+   to a real array first. */
 function preflight(files) {
+  const batch = Array.from(files || []);
   const form = $("upload-form");
   const maxFiles = Number(form.dataset.maxFiles) || 20;
   const maxMb = Number(form.dataset.maxMb) || 50;
-  if (files.length > maxFiles) {
-    return `Too many files: ${files.length}. Upload at most ${maxFiles} at once.`;
+  if (batch.length > maxFiles) {
+    return `Too many files: ${batch.length}. Upload at most ${maxFiles} at once.`;
   }
-  const oversized = files.filter((f) => f.size > maxMb * 1024 * 1024);
+  const oversized = batch.filter((f) => f.size > maxMb * 1024 * 1024);
   if (oversized.length) {
-    return `${oversized[0].name} is larger than the ${maxMb} MB limit.`;
+    return `${shortName(oversized[0].name)} is larger than the ${maxMb} MB limit.`;
   }
-  const wrongType = files.filter((f) => f.type && f.type !== "application/pdf");
+  const wrongType = batch.filter((f) => f.type && f.type !== "application/pdf");
   if (wrongType.length) {
-    return `${wrongType[0].name} is not a PDF.`;
+    return `${shortName(wrongType[0].name)} is not a PDF.`;
   }
   return null;
 }
 
 function describeFiles(files) {
-  const mb = files.reduce((sum, f) => sum + f.size, 0) / (1024 * 1024);
+  // FileList is array-like but has no reduce(); normalise first.
+  const batch = Array.from(files || []);
+  const mb = batch.reduce((sum, f) => sum + f.size, 0) / (1024 * 1024);
   const size = mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(mb * 1024)} KB`;
-  return `${files.length} file${files.length === 1 ? "" : "s"} · ${size}`;
+  return `${batch.length} file${batch.length === 1 ? "" : "s"} · ${size}`;
+}
+
+/* Shorten a path-like filename without losing the part that identifies it. */
+function shortName(name) {
+  const base = String(name || "").split(/[\\/]/).pop() || "file";
+  return base.length > 64 ? base.slice(0, 48) + "…" + base.slice(-12) : base;
+}
+
+function humanSize(bytes) {
+  const kb = bytes / 1024;
+  return kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${Math.round(kb)} KB`;
+}
+
+/* Name every selected file.
+
+  Reporting only a count left the operator unable to confirm which file they
+  had picked, which is indistinguishable from a picker that did not open.
+ */
+function renderFileList(files) {
+  const list = $("upload-list");
+  if (!files || !files.length) {
+    list.hidden = true;
+    list.innerHTML = "";
+    return;
+  }
+  const MAX_ROWS = 8;
+  const shown = Array.from(files).slice(0, MAX_ROWS);
+  list.hidden = false;
+  list.innerHTML = shown.map((f) =>
+    `<li><span class="file-name" title="${esc(f.name)}">${esc(shortName(f.name))}</span>` +
+    `<span class="file-size">${humanSize(f.size)}</span></li>`).join("") +
+    (files.length > MAX_ROWS
+      ? `<li class="file-more">+${files.length - MAX_ROWS} more</li>`
+      : "");
 }
 
 /* The file input is a data sink rather than a control: the Browse button and
@@ -648,8 +691,10 @@ function bindDropzone() {
     if (!input.files.length) {
       sub.textContent = "up to 20 files · 50 MB total";
       sub.style.color = "";
+      renderFileList(null);
       return;
     }
+    renderFileList(input.files);
     const problem = preflight(input.files);
     if (problem) {
       sub.textContent = problem;
@@ -842,6 +887,8 @@ function bind() {
 
     const problem = preflight(input.files);
     if (problem) {
+      // Surfaced on both channels: the status line stays visible after the
+      // toast fades, and the toast is what an operator is actually watching.
       intakeStatus(problem, "err");
       toast(problem, "err");
       return;
@@ -857,14 +904,20 @@ function bind() {
       const result = await api("/api/upload", { method: "POST", body: form });
       const added = result.added ? result.added.length : 0;
       const skipped = (result.duplicates || []).length;
-      intakeStatus(
-        `Indexed ${added} new document${added === 1 ? "" : "s"}; skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}.`,
-        "ok"
-      );
-      toast(`Indexed ${added} new document(s).`, "ok");
+      const failed = Object.keys(result.failures || {}).length;
+      // Name what was actually indexed, so a partial batch is never a surprise.
+      const names = (result.added || []).map((d) => shortName(d.title || d.document_id));
+      const parts = [];
+      if (names.length) parts.push(`Indexed: ${names.join(", ")}`);
+      if (skipped) parts.push(`${skipped} duplicate${skipped === 1 ? "" : "s"} skipped`);
+      if (failed) parts.push(`${failed} rejected`);
+      intakeStatus(parts.join(" · ") || "Nothing was indexed.", failed ? "err" : "ok");
+      toast(failed ? `Indexed ${added}, ${failed} rejected.` : `Indexed ${added} document(s).`,
+            failed ? "err" : "ok");
       input.value = "";
       $("dz-sub").textContent = "up to 20 files · 50 MB total";
       $("dz-sub").style.color = "";
+      renderFileList(null);
       await loadState();
     } catch (err) {
       // A per-file failure surfaces as a 400 now, so it has to be shown.
