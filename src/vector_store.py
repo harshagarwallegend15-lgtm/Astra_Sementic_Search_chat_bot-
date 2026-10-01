@@ -217,6 +217,9 @@ class VectorStore:
             return
         with self._lock:
             if self._store is None:
+                # `build` resets by default, which is what we want here: there
+                # is no live index to append to, so the new chunks become the
+                # whole index rather than being merged into a stale manifest.
                 self.build(chunks, documents=documents)
                 return
             new_chunks = [c for c in chunks if c.chunk_id not in self._chunks]
@@ -307,11 +310,19 @@ class VectorStore:
                 hits = self._store.similarity_search_with_score(query, k=pool)
             except Exception as exc:
                 raise VectorStoreError(f"Vector search failed: {exc}") from exc
+            # Bind the chunk map that corresponds to *these* hits before
+            # releasing the lock. Reading `self._chunks` after the lock is
+            # dropped lets a concurrent `add`/`clear`/`build` rebind it, in
+            # which case every hit fails to resolve and `search` returns []
+            # - which the answerer reports as "the documents do not contain
+            # that information". That is a confident, silently wrong refusal,
+            # so the snapshot is taken here instead.
+            chunk_map = self._chunks
 
         wanted = set(document_ids) if document_ids is not None else None
         results: list[tuple[Chunk, float]] = []
         for document, distance in hits:
-            chunk = self._chunks.get(document.metadata.get("chunk_id", ""))
+            chunk = chunk_map.get(document.metadata.get("chunk_id", ""))
             if chunk is None:
                 continue
             if wanted is not None and chunk.document_id not in wanted:

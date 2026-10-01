@@ -28,6 +28,11 @@ from .vector_store import VectorStore
 
 logger = get_logger(__name__)
 
+# How long a failed language-model build is cached before another is attempted.
+# Long enough that a hard misconfiguration does not retry on every question,
+# short enough that a transient outage heals without restarting the process.
+LLM_RETRY_COOLDOWN_S = 60.0
+
 
 @dataclass
 class IngestResult:
@@ -59,26 +64,42 @@ class AstraPipeline:
         self._catalog = load_metadata_catalog(self.settings.sample_metadata_path)
         self._loaded = False
         self._llm = None
-        self._llm_failed = False
+        self._llm_failed_until: float | None = None
 
     def llm(self):
         """Return a cached LLM client, building it on first use.
 
         Built lazily and cached because constructing a client opens a network
         session, and ingestion does not need one. A provider that cannot be
-        reached is remembered as failed so a misconfigured deployment degrades
+        built is remembered as failed so a misconfigured deployment degrades
         to evidence-only answers instead of retrying and stalling on every
-        question. Pass an explicit client to ``answerer()`` to override.
+        question.
+
+        The failure record is *not* permanent: it carries a cooldown so a
+        transient fault (DNS blip, rate limit, provider restart) heals on its
+        own without a restart, while a genuine misconfiguration is not retried
+        on every single question. Pass an explicit client to ``answerer()`` to
+        override.
         """
-        if self._llm is not None or self._llm_failed:
+        if self._llm is not None:
             return self._llm
+        if self._llm_failed_until is not None:
+            if time.monotonic() < self._llm_failed_until:
+                return None
+            logger.info("Retrying the language model after its cooldown expired.")
+            self._llm_failed_until = None
         try:
             from .llm import build_llm_client
 
             self._llm = build_llm_client(self.settings)
+            self._llm_failed_until = None
         except Exception as exc:  # noqa: BLE001 - degrade, never crash the UI
-            logger.warning("LLM unavailable (%s); answers will be evidence-only.", exc)
-            self._llm_failed = True
+            self._llm_failed_until = time.monotonic() + LLM_RETRY_COOLDOWN_S
+            logger.warning(
+                "LLM unavailable (%s); answers will be evidence-only for %.0fs.",
+                exc,
+                LLM_RETRY_COOLDOWN_S,
+            )
             self._llm = None
         return self._llm
 
@@ -161,8 +182,14 @@ class AstraPipeline:
             self.store.add(new_chunks, documents=documents)
             self.store.save()
             result.added = documents
-        elif result.failures and not result.duplicates:
-            raise AstraIntelError("; ".join(result.failures.values()) or "Ingestion failed.")
+
+        # Any per-file failure is surfaced, even when other files succeeded or
+        # were duplicates. Previously a batch mixing one duplicate with one
+        # broken file fell through every branch and returned HTTP 200 with the
+        # failure buried in the payload, so the console reported a cheerful
+        # "Indexed 0 new documents" and the broken PDF vanished silently.
+        if result.failures:
+            raise AstraIntelError("; ".join(result.failures.values()))
 
         self._build_retriever()
         result.chunk_count = self.store.chunk_count

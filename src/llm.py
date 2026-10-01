@@ -18,11 +18,19 @@ from langchain_core.messages import (
 )
 from langchain_ollama import ChatOllama
 
-from .config import Settings
+from .config import OPENAI_COMPATIBLE_BASES, Settings
 from .errors import LLMError
 from .logging_utils import get_logger
 
 logger = get_logger(__name__)
+
+# Providers served by the OpenAI-compatible client: every named endpoint plus
+# the provider-agnostic aliases. Derived from the one table that
+# ``Settings.resolved_base_url`` also consults, so the accepted names and the
+# inferred base URLs can never drift apart.
+_OPENAI_COMPATIBLE_PROVIDERS: frozenset[str] = frozenset(
+    OPENAI_COMPATIBLE_BASES
+) | {"openai-compatible", "openai_compatible"}
 
 SYSTEM_ROLE = "system"
 USER_ROLE = "user"
@@ -168,17 +176,26 @@ class OpenAICompatibleLLMClient(BaseLLMClient):
 
 
 def build_llm_client(settings: Settings) -> BaseLLMClient:
-    """Instantiate the client for the configured provider."""
+    """Instantiate the client for the configured provider.
+
+    ``ollama`` gets its own client; everything else in
+    ``OPENAI_COMPATIBLE_BASES`` is reachable by its own name (``groq``,
+    ``together``, ``deepseek``, ``openrouter``, ``lmstudio``) as well as under
+    the generic aliases. ``Settings.resolved_base_url`` already infers the
+    endpoint from those names, so rejecting them here would make a provider
+    that validation explicitly accepts fail at build time.
+    """
     settings.validate_llm()
     provider = settings.llm_provider.lower()
     if provider == "ollama":
         client: BaseLLMClient = OllamaLLMClient(settings)
-    elif provider in {"openai", "openai-compatible", "openai_compatible"}:
+    elif provider in _OPENAI_COMPATIBLE_PROVIDERS:
         client = OpenAICompatibleLLMClient(settings)
     else:
         raise LLMError(
-            f"Unsupported LLM_PROVIDER '{settings.llm_provider}'. "
-            "Use 'ollama' or 'openai'."
+            f"Unsupported LLM_PROVIDER '{settings.llm_provider}'. Use one of: "
+            + ", ".join(sorted(_OPENAI_COMPATIBLE_PROVIDERS))
+            + ", ollama."
         )
     logger.info(
         "LLM client ready: provider=%s model=%s endpoint=%s",

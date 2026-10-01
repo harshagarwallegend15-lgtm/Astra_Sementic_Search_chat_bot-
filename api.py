@@ -20,6 +20,8 @@ from __future__ import annotations
 import dataclasses
 import logging
 import sys
+import threading
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -149,18 +151,41 @@ app = FastAPI(
 )
 
 _pipeline: AstraPipeline | None = None
+_pipeline_lock = threading.Lock()
 
 
 def get_pipeline() -> AstraPipeline:
-    """One pipeline for the process; the index lives on disk."""
+    """The one pipeline for the process; the index lives on disk.
+
+    Sync handlers run in Starlette's threadpool, so two concurrent first
+    requests would both see ``None``, both construct a pipeline, and both
+    load ``data/vectorstore`` - the loser's store would be discarded
+    half-read, and each store has its own lock so they do not exclude each
+    other. The whole check-then-load-construct sequence is therefore
+    serialised.
+    """
     global _pipeline
-    if _pipeline is None:
-        settings = get_settings()
-        setup_logging(settings.log_level)
-        pipeline = AstraPipeline(settings)
-        pipeline.load()
-        _pipeline = pipeline
+    if _pipeline is not None:
+        return _pipeline
+    with _pipeline_lock:
+        if _pipeline is None:
+            settings = get_settings()
+            setup_logging(settings.log_level)
+            pipeline = AstraPipeline(settings)
+            pipeline.load()
+            _pipeline = pipeline
     return _pipeline
+
+
+def reset_pipeline() -> None:
+    """Drop the cached pipeline so the next call rebuilds it.
+
+    Used by tests that swap the on-disk index out from under the process, and
+    available to callers that mutate ``VECTORSTORE_DIR`` at runtime.
+    """
+    global _pipeline
+    with _pipeline_lock:
+        _pipeline = None
 
 
 def _state() -> dict[str, Any]:

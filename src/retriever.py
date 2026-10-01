@@ -24,6 +24,7 @@ import math
 import re
 from collections import Counter
 from dataclasses import dataclass
+from threading import Lock
 from typing import Iterable, Sequence
 
 from rank_bm25 import BM25Okapi
@@ -128,33 +129,40 @@ class BM25Index:
     """Sparse lexical index over the chunk corpus, kept in sync with FAISS."""
 
     def __init__(self) -> None:
-        self._bm25: BM25Okapi | None = None
-        self._chunk_ids: list[str] = []
-        self._fingerprint: tuple[int, str] = (0, "")
+        # The index, its id ordering and its fingerprint are three coupled
+        # values that must always agree. They are published as one immutable
+        # tuple so a reader can never observe a half-updated combination, and
+        # `ensure` is serialised because every request thread shares one
+        # instance. Previously the fields were assigned one at a time, which
+        # let two threads interleave and pair one corpus's scores with another
+        # corpus's id ordering - a wrong citation, silently.
+        self._lock = Lock()
+        self._index: tuple[BM25Okapi | None, list[str], tuple[int, str]] | None = None
 
     @property
     def size(self) -> int:
-        return len(self._chunk_ids)
+        snapshot = self._index
+        return len(snapshot[1]) if snapshot else 0
 
     def ensure(self, chunks: Sequence[Chunk]) -> None:
         """Rebuild the index if the corpus changed."""
         fingerprint = self._fingerprint_of(chunks)
-        if self._bm25 is not None and fingerprint == self._fingerprint:
+        current = self._index
+        if current is not None and current[0] is not None and fingerprint == current[2]:
             return
         corpus = [
             tokenize(f"{chunk.title} {chunk.section or ''} {chunk.text}")
             for chunk in chunks
         ]
         # BM25Okapi fails on an all-empty corpus; guard it.
-        if not any(corpus):
-            self._bm25 = None
-            self._chunk_ids = []
-            self._fingerprint = fingerprint
-            return
-        self._bm25 = BM25Okapi(corpus)
-        self._chunk_ids = [chunk.chunk_id for chunk in chunks]
-        self._fingerprint = fingerprint
-        logger.debug("BM25 index rebuilt over %d chunks", len(self._chunk_ids))
+        built: BM25Okapi | None = None
+        ids: list[str] = []
+        if any(corpus):
+            built = BM25Okapi(corpus)
+            ids = [chunk.chunk_id for chunk in chunks]
+        with self._lock:
+            self._index = (built, ids, fingerprint)
+        logger.debug("BM25 index rebuilt over %d chunks", len(ids))
 
     @staticmethod
     def _fingerprint_of(chunks: Sequence[Chunk]) -> tuple[int, str]:
@@ -165,16 +173,20 @@ class BM25Index:
         return (len(chunks), f"{chunks[-1].chunk_id}:{total}")
 
     def search(self, query: str, k: int) -> list[tuple[str, float]]:
-        if self._bm25 is None:
+        # One read of the published tuple: the scores and the id ordering below
+        # are then guaranteed to come from the same corpus.
+        snapshot = self._index
+        if snapshot is None or snapshot[0] is None:
             return []
+        bm25, chunk_ids, _ = snapshot
         tokens = tokenize(query)
         if not tokens:
             return []
-        scores = self._bm25.get_scores(tokens)
+        scores = bm25.get_scores(tokens)
         ranked = sorted(
             range(len(scores)), key=lambda i: float(scores[i]), reverse=True
         )[:k]
-        return [(self._chunk_ids[i], float(scores[i])) for i in ranked]
+        return [(chunk_ids[i], float(scores[i])) for i in ranked]
 
 
 class Retriever:
