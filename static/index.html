@@ -240,14 +240,20 @@
           </div>
         </header>
         <form id="upload-form" class="upload-form" data-max-files="20" data-max-mb="50">
-          <label class="dropzone" id="dropzone">
-            <input type="file" id="upload-input" accept="application/pdf" multiple />
+          <div class="dropzone" id="dropzone">
+            <!-- Visually hidden and inert. It used to be absolutely positioned
+                 across the whole dropzone, which meant the input itself sat on
+                 top and swallowed every drag event, so drops did nothing. The
+                 button below is now the only pointer target. -->
+            <input type="file" id="upload-input" accept="application/pdf" multiple
+                   tabindex="-1" aria-hidden="true" />
             <span class="dz-ico" aria-hidden="true"></span>
             <span class="dz-copy">
-              <span class="dz-main">Drop PDF files or <em>browse</em></span>
+              <span class="dz-main">Drop PDF files here</span>
               <span class="dz-sub" id="dz-sub">up to 20 files &middot; 50 MB total</span>
             </span>
-          </label>
+            <button type="button" class="btn btn-ghost" id="upload-browse">Browse files</button>
+          </div>
           <button class="btn btn-primary" type="submit" id="upload-submit">Ingest</button>
         </form>
         <div class="intake-status" id="upload-note">No batch ingested in this session.</div>

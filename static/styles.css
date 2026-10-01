@@ -816,7 +816,15 @@ table.grid tr.empty:hover { background: none; }
   border-style: dashed;
   transition: border-color .18s, background .18s, transform .18s var(--ease);
 }
-.dropzone input { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; cursor: pointer; }
+/* The file input is a data sink, not a control: the Browse button and the
+   drop target own the pointer. Giving the input geometry (as an invisible
+   overlay does) puts it on top of the dropzone, where it intercepts dragover
+   and drop before the zone can handle them. */
+.dropzone input[type="file"] {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+#upload-browse { margin-left: auto; flex: 0 0 auto; }
 .dropzone:hover, .dropzone:focus-within { border-color: rgba(34, 211, 238, .5); background: rgba(34, 211, 238, .05); }
 .dropzone.is-over {
   border-color: var(--accent); border-style: solid;

@@ -597,20 +597,30 @@ function describeFiles(files) {
   return `${files.length} file${files.length === 1 ? "" : "s"} · ${size}`;
 }
 
-/* Drag-and-drop onto the existing file input. The input's own files list is
-   assigned rather than tracked separately, so submitting reads one source of
-   truth. */
+/* The file input is a data sink rather than a control: the Browse button and
+   the drop target own the pointer. An input styled as a full-size invisible
+   overlay sits above the dropzone, and the browser routes drag events to it
+   first, so drops land on the input and the zone's handlers never see them. */
 function bindDropzone() {
   const zone = $("dropzone");
   const input = $("upload-input");
   let depth = 0;
 
   const setFiles = (list) => {
-    const transfer = new DataTransfer();
-    for (const file of list) transfer.items.add(file);
-    input.files = transfer.files;
+    try {
+      const transfer = new DataTransfer();
+      for (const file of list) transfer.items.add(file);
+      input.files = transfer.files;
+    } catch (err) {
+      // Some browsers refuse programmatic assignment. The picker path still
+      // works, so say so rather than failing silently.
+      toast("Drag-and-drop is unavailable here. Use Browse files.", "err");
+      return;
+    }
     input.dispatchEvent(new Event("change", { bubbles: true }));
   };
+
+  $("upload-browse").onclick = () => input.click();
 
   zone.addEventListener("dragenter", (event) => {
     event.preventDefault();
@@ -629,22 +639,24 @@ function bindDropzone() {
     event.preventDefault();
     depth = 0;
     zone.classList.remove("is-over");
-    const files = event.dataTransfer.files;
-    if (files.length) setFiles(files);
+    const files = event.dataTransfer && event.dataTransfer.files;
+    if (files && files.length) setFiles(files);
   });
 
   input.addEventListener("change", () => {
+    const sub = $("dz-sub");
     if (!input.files.length) {
-      $("dz-sub").textContent = "drop PDFs here, or browse";
+      sub.textContent = "up to 20 files · 50 MB total";
+      sub.style.color = "";
       return;
     }
     const problem = preflight(input.files);
     if (problem) {
-      $("dz-sub").textContent = problem;
-      $("dz-sub").style.color = "var(--bad)";
+      sub.textContent = problem;
+      sub.style.color = "var(--bad)";
     } else {
-      $("dz-sub").textContent = describeFiles(input.files);
-      $("dz-sub").style.color = "";
+      sub.textContent = describeFiles(input.files) + " ready to ingest";
+      sub.style.color = "";
     }
   });
 }
@@ -851,7 +863,7 @@ function bind() {
       );
       toast(`Indexed ${added} new document(s).`, "ok");
       input.value = "";
-      $("dz-sub").textContent = "drop PDFs here, or browse";
+      $("dz-sub").textContent = "up to 20 files · 50 MB total";
       $("dz-sub").style.color = "";
       await loadState();
     } catch (err) {

@@ -134,6 +134,65 @@ def test_the_reduced_motion_block_covers_the_ambient_layers():
         assert layer in block, f"{layer} still animates under reduced motion"
 
 
+def test_the_upload_input_cannot_swallow_drag_events(page):
+    """Regression: the intake drop target was dead.
+
+    The file input was styled as a full-size invisible overlay
+    (`position:absolute; inset:0; opacity:0`) inside the dropzone. It therefore
+    sat above the drop target, and the browser routed dragover/drop to the
+    input, so the dropzone's own handlers never fired and dragging a PDF in did
+    nothing. The input is now visually hidden and inert, and an explicit Browse
+    button is the pointer target.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    rule = css.split(".dropzone input[type=\"file\"]")[1].split("}")[0]
+    for banned in ("inset:", "width: 100%", "height: 100%", "opacity: 0"):
+        assert banned not in rule, (
+            f"`{banned}` makes the input cover the dropzone and swallow drops"
+        )
+
+    # The input must not be a label wrapping itself, and there must be a
+    # real, clickable way to open the picker.
+    assert "<label class=\"dropzone\"" not in page, (
+        "a label wrapping the input double-activates the picker"
+    )
+    assert 'type="button" class="btn btn-ghost" id="upload-browse"' in page
+
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert '$("upload-browse").onclick' in script, "the Browse button is not wired"
+    dropzone = script.split("function bindDropzone")[1].split("\n}")[0]
+    assert '"drop"' in dropzone, "no drop handler on the dropzone"
+    assert "DataTransfer" in dropzone
+
+
+def test_intake_reports_progress_and_failure_on_screen(page):
+    """A silent upload is indistinguishable from a broken one.
+
+    The status line and the toast are the only feedback the operator gets, so
+    both the success and the failure paths must write to them.
+    """
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    # The handler body runs to the next top-level `$("...")` binding, which is
+    # the only reliable end marker: any `};` inside lands mid-function.
+    start = script.index('$("upload-form").onsubmit')
+    end = script.index("\n  $(", script.index("bindDropzone();", start))
+    submit = script[start:end]
+    assert "intakeStatus(" in submit, "no progress text on upload"
+    # intakeStatus() maps a kind to the `is-<kind>` class, so the call sites
+    # pass the bare kind.
+    assert 'intakeStatus(err.message, "err")' in submit, (
+        "upload failures are not surfaced in the status line"
+    )
+    assert '"ok")' in submit, "upload success is not surfaced in the status line"
+    assert '"busy"' in submit, "no in-progress state while ingesting"
+    assert 'id="upload-note"' in page
+
+    # The kinds the handler passes must all have a style.
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    for kind in ("ok", "err", "busy"):
+        assert f".intake-status.is-{kind}" in css, f"no style for is-{kind}"
+
+
 def test_the_donut_centre_figure_is_readable_on_a_dark_panel():
     """Regression: the count was drawn #1a202c on a near-black card.
 
