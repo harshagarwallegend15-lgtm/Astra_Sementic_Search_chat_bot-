@@ -1035,6 +1035,18 @@ function bind() {
     item.onclick = () => showView(item.dataset.view);
   });
 
+  // Corner brackets are drawn by a pseudo-element, so each panel needs one
+  // empty carrier element. Injected rather than hand-written into the markup
+  // because it is pure decoration and must never appear in the HTML source a
+  // reviewer reads.
+  document.querySelectorAll(".panel.bracket").forEach((panel) => {
+    if (panel.querySelector(".bracket-corners")) return;
+    const corners = document.createElement("span");
+    corners.className = "bracket-corners";
+    corners.setAttribute("aria-hidden", "true");
+    panel.appendChild(corners);
+  });
+
   $("hero-open-query").onclick = () => {
     showView("query");
     $("ask-input").focus();

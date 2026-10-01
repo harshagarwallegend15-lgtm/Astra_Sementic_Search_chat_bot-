@@ -1,4 +1,4 @@
-/* ASTRA INTEL - corpus operations console
+﻿/* ASTRA INTEL - corpus operations console
    -----------------------------------------------------------------------
    Design language: a command deck.
 
@@ -44,9 +44,9 @@
      translucent box - which is exactly what the earlier panels looked like. */
   --glass-fill: linear-gradient(
     165deg,
-    rgba(255, 255, 255, .085) 0%,
-    rgba(255, 255, 255, .030) 34%,
-    rgba(255, 255, 255, .012) 100%
+    rgba(14,22,38,.72) 0%,
+    rgba(11,18,32,.62) 34%,
+    rgba(9,15,27,.58) 100%
   );
   --glass-blur: blur(22px) saturate(155%);
   /* Rim: brighter where light would catch it, dimmer underneath. */
@@ -1103,3 +1103,132 @@ table.grid tr.empty:hover { background: none; }
 @media (max-width: 720px) {
   .hero-body { padding: 26px 20px; }
 }
+
+/* ===================================================== defence backdrop == */
+
+/* Generated SVG layers, drifted at different speeds. Each is oversized well
+   past the viewport so a translate never exposes an edge. Duration and
+   distance deliberately differ per layer: that mismatch is the parallax, and
+   running them at one speed collapses the effect into a flat pan. */
+.map-layer {
+  position: absolute;
+  /* 130% so a 4% drift in any direction still covers the viewport. */
+  inset: -15%;
+  background-repeat: repeat;
+  background-size: cover;
+  will-change: transform;
+  pointer-events: none;
+}
+
+.map-contours {
+  background-image: url("/static/media/terrain-contours.svg");
+  opacity: .15;
+  mix-blend-mode: screen;
+  animation: drift-contours 190s linear infinite alternate;
+}
+.map-grid {
+  background-image: url("/static/media/coord-grid.svg");
+  opacity: .09;
+  mix-blend-mode: screen;
+  animation: drift-grid 260s linear infinite alternate;
+}
+.map-sectors {
+  background-image: url("/static/media/sector-arcs.svg");
+  opacity: .13;
+  mix-blend-mode: screen;
+  animation: drift-sectors 150s linear infinite alternate;
+}
+.map-schematic {
+  background-image: url("/static/media/schematic.svg");
+  opacity: .08;
+  mix-blend-mode: screen;
+  animation: drift-schematic 320s linear infinite alternate;
+}
+
+/* Slow enough to read as a living map rather than a slideshow. */
+@keyframes drift-contours {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to   { transform: translate3d(-2.6%, -1.8%, 0) scale(1.03); }
+}
+@keyframes drift-grid {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(1.9%, -2.2%, 0); }
+}
+@keyframes drift-sectors {
+  from { transform: translate3d(-1.4%, 1.6%, 0) scale(1.02); }
+  to   { transform: translate3d(2.2%, -1.2%, 0) scale(1.02); }
+}
+@keyframes drift-schematic {
+  from { transform: translate3d(1.1%, 1.1%, 0); }
+  to   { transform: translate3d(-1.7%, -1.4%, 0); }
+}
+
+/* Slow drifting imagery is exactly what a motion-sensitive visitor cannot opt
+   out of, so the whole map stack freezes rather than merely slowing. */
+@media (prefers-reduced-motion: reduce) {
+  .map-layer { animation: none !important; }
+  .map-contours, .map-grid, .map-sectors, .map-schematic { opacity: .16; }
+}
+
+/* ============================================================== borders == */
+
+/* Machined corner brackets on the primary panels.
+   Implemented as a pseudo-element rather than a border style because the
+   corners need to sit *on* the rounded edge, which no border value can do. */
+.panel.bracket { position: relative; }
+
+.panel.bracket > .bracket-corners {
+  position: absolute; inset: -1px; border-radius: inherit;
+  pointer-events: none; color: var(--accent);
+}
+.panel.bracket > .bracket-corners::before,
+.panel.bracket > .bracket-corners::after {
+  content: "";
+  position: absolute;
+  width: 15px; height: 15px;
+  border: 1.5px solid currentColor;
+  opacity: .5;
+  transition: opacity .22s var(--ease), width .22s var(--ease), height .22s var(--ease);
+}
+/* Top-left and bottom-right: the diagonal pair, so the frame reads as drawn. */
+.panel.bracket > .bracket-corners::before {
+  top: 7px; left: 7px;
+  border-right: 0; border-bottom: 0;
+  border-top-left-radius: 5px;
+}
+.panel.bracket > .bracket-corners::after {
+  bottom: 7px; right: 7px;
+  border-left: 0; border-top: 0;
+  border-bottom-right-radius: 5px;
+}
+.panel.bracket:hover > .bracket-corners::before,
+.panel.bracket:hover > .bracket-corners::after { opacity: .95; width: 21px; height: 21px; }
+
+/* A hairline that runs along the top edge and carries a moving highlight, the
+   detail that makes a static box look powered. */
+.panel.bracket > .bracket-corners { background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(34,211,238,.55) 22%,
+    rgba(190,240,255,.9) 50%,
+    rgba(34,211,238,.55) 78%,
+    transparent 100%
+  );
+  background-repeat: no-repeat;
+  background-size: 260% 1.5px;
+  background-position: -30% 0;
+  animation: rimSweep 9s linear infinite;
+}
+@keyframes rimSweep {
+  0%   { background-position: -60% 0; }
+  100% { background-position: 160% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel.bracket > .bracket-corners { animation: none !important; }
+  .panel.bracket:hover > .bracket-corners::before,
+  .panel.bracket:hover > .bracket-corners::after { width: 15px; height: 15px; }
+}
+
+
+

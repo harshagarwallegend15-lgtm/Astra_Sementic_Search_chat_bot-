@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8" />
@@ -11,12 +11,21 @@
 
 <!-- Ambient depth: three slow colour fields and a faint measurement grid
      behind machined panels. Purely decorative, hidden from assistive tech,
-     and fully static under prefers-reduced-motion. -->
+     and fully static under prefers-reduced-motion.
+
+     The four SVG layers beneath are procedurally generated artwork (see
+     scripts/generate_backdrop.py): terrain contours, a coordinate graticule,
+     dashed range arcs with plotted contacts, and schematic callouts. They
+     drift at different speeds, which is what produces parallax. -->
 <div class="aurora" aria-hidden="true">
   <span class="orb orb-1"></span>
   <span class="orb orb-2"></span>
   <span class="orb orb-3"></span>
   <span class="grid-veil"></span>
+  <span class="map-layer map-contours"></span>
+  <span class="map-layer map-grid"></span>
+  <span class="map-layer map-sectors"></span>
+  <span class="map-layer map-schematic"></span>
   <span class="sweep"></span>
 </div>
 
@@ -201,7 +210,7 @@
       <div class="deck">
 
         <div class="deck-main">
-          <article class="panel panel-hero ticked">
+          <article class="panel panel-hero ticked bracket">
             <header class="panel-head">
               <div>
                 <h2>Query Console</h2>
@@ -237,7 +246,7 @@
             <div id="ask-result" class="ask-result"></div>
           </article>
 
-          <article class="panel">
+          <article class="panel bracket">
             <header class="panel-head">
               <h2>Query Log</h2>
               <span class="muted tiny" id="log-count">no queries yet</span>
@@ -258,7 +267,7 @@
         </div>
 
         <div class="deck-rail">
-          <article class="panel">
+          <article class="panel bracket">
             <header class="panel-head">
               <h2>Corpus Telemetry</h2>
               <span class="muted tiny">click to filter the log</span>
@@ -298,7 +307,7 @@
             </div>
           </article>
 
-          <article class="panel">
+          <article class="panel bracket">
             <header class="panel-head">
               <h2>Answer Integrity</h2>
               <span class="muted tiny">this session</span>
@@ -310,7 +319,7 @@
             </div>
           </article>
 
-          <article class="panel">
+          <article class="panel bracket">
             <header class="panel-head">
               <h2>Volume by Document</h2>
               <span class="muted tiny">indexed passages</span>
@@ -325,7 +334,7 @@
     <!-- ============================ DOCUMENTS ============================ -->
     <section class="view" id="view-documents">
 
-      <article class="panel">
+      <article class="panel bracket">
         <header class="panel-head">
           <div>
             <h2>Intake</h2>
@@ -347,7 +356,7 @@
             </span>
             <button type="button" class="btn btn-ghost" id="upload-browse">Browse files</button>
           </div>
-          <!-- Without this the operator only ever saw "1 file · 1.2 MB" and
+          <!-- Without this the operator only ever saw "1 file Â· 1.2 MB" and
                had no way to confirm *which* file they had picked. -->
           <ul class="file-list" id="upload-list" hidden></ul>
           <button class="btn btn-primary" type="submit" id="upload-submit">Ingest</button>
@@ -355,7 +364,7 @@
         <div class="intake-status" id="upload-note">No batch ingested in this session.</div>
       </article>
 
-      <article class="panel">
+      <article class="panel bracket">
         <header class="panel-head">
           <h2>Document Register</h2>
           <span class="muted tiny" id="register-count">&mdash;</span>
@@ -379,7 +388,7 @@
 
       <!-- Per-document briefing, inline. The old Briefings tab regenerated
            every document for one button; this briefs the row you clicked. -->
-      <article class="panel" id="brief-panel" hidden>
+      <article class="panel bracket" id="brief-panel" hidden>
         <header class="panel-head">
           <div>
             <h2>Document Briefing</h2>
@@ -392,7 +401,7 @@
 
       <!-- Extraction QA, collapsed by default: useful when verifying an
            ingest, not something to read on every visit. -->
-      <article class="panel">
+      <article class="panel bracket">
         <details class="disclose">
           <summary class="panel-head">
             <span>Extraction Quality</span>
@@ -414,3 +423,4 @@
 <script src="/static/app.js"></script>
 </body>
 </html>
+

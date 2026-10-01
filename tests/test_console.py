@@ -371,6 +371,134 @@ def test_the_hero_covers_all_four_stats_on_one_row():
     assert "auto-fit" not in stats, "auto-fit still wraps the stats"
 
 
+def test_the_backdrop_artwork_is_present_and_local(page):
+    """Four generated SVG layers, all repo-local.
+
+    The generator exists because raster defence photography could not be
+    sourced, and a remote CDN asset would be a single point of failure during a
+    recorded demo. SVGs cost kilobytes and never 404.
+    """
+    css_path = (STATIC / "styles.css").read_text(encoding="utf-8")
+    # filename stem -> the class that carries it. The stems are hyphenated but
+    # the classes are not, so they cannot be derived mechanically.
+    layers = {
+        "terrain-contours": "map-contours",
+        "coord-grid": "map-grid",
+        "sector-arcs": "map-sectors",
+        "schematic": "map-schematic",
+    }
+    for stem, cls in layers.items():
+        assert cls in page, f"the {stem} layer is missing"
+        assert f"/static/media/{stem}.svg" in css_path, f"{stem} is not wired to CSS"
+
+    assert "http://" not in _media_block(page), "a backdrop layer points at a CDN"
+
+    # The artwork must actually exist on disk, or the layers render empty.
+    media = STATIC / "media"
+    for stem in layers:
+        path = media / f"{stem}.svg"
+        assert path.is_file(), f"{path.name} is referenced but not generated"
+        text = path.read_text(encoding="utf-8")
+        assert text.lstrip().startswith("<svg"), f"{path.name} is not valid SVG"
+        assert path.stat().st_size < 400_000, f"{path.name} is unexpectedly large"
+    # filename stem -> the class that carries it. The stems are hyphenated but
+    # the classes are not, so they cannot be derived mechanically.
+    layers = {
+        "terrain-contours": "map-contours",
+        "coord-grid": "map-grid",
+        "sector-arcs": "map-sectors",
+        "schematic": "map-schematic",
+    }
+    for stem, cls in layers.items():
+        assert cls in page, f"the {stem} layer is missing"
+        assert f"/static/media/{stem}.svg" in css_path, f"{stem} is not wired to CSS"
+
+    assert "http://" not in _media_block(page), "a backdrop layer points at a CDN"
+
+    # The artwork must actually exist on disk, or the layers render empty.
+    media = STATIC / "media"
+    for stem in layers:
+        path = media / f"{stem}.svg"
+        assert path.is_file(), f"{path.name} is referenced but not generated"
+        text = path.read_text(encoding="utf-8")
+        assert text.lstrip().startswith("<svg"), f"{path.name} is not valid SVG"
+        assert path.stat().st_size < 400_000, f"{path.name} is unexpectedly large"
+
+
+def _media_block(page: str) -> str:
+    start = page.find('<div class="aurora"')
+    return page[start : page.find("</div>", start)]
+
+
+def test_backdrop_layers_drift_at_different_speeds():
+    """Differential drift is what produces parallax.
+
+    Running every layer at one speed collapses the effect into a flat pan,
+    which is the whole visual difference being bought here.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    durations = set(re.findall(r"animation:\s*drift-\w+\s+(\d+)s", css))
+    assert len(durations) >= 3, f"only {len(durations)} drift speeds; no parallax"
+    for layer in ("contours", "grid", "sectors", "schematic"):
+        assert f"@keyframes drift-{layer}" in css, f"drift-{layer} has no keyframes"
+    # Oversized so a translate never exposes an edge.
+    layer_rule = css.split(".map-layer {")[1].split("}")[0]
+    assert "inset: -15%" in layer_rule or "-15%" in layer_rule, (
+        "the layers are not oversized, so drifting exposes the edge"
+    )
+
+
+def test_the_backdrop_cannot_compete_with_the_content():
+    """The layers were initially strong enough to show stencilled text through
+    the panels, which fought the copy. Opacity is a legibility budget, not a
+    taste knob.
+    """
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    for layer in ("contours", "grid", "sectors", "schematic"):
+        rule = css.split(f".map-{layer} {{")[1].split("}")[0]
+        # CSS writes these without a leading zero, so `.15` means 0.15.
+        value = float("0." + re.search(r"opacity:\s*\.(\d+)", rule).group(1))
+        assert value <= 0.20, (
+            f"the {layer} layer sits at {value}, too strong to read behind panels"
+        )
+
+
+def test_panels_carry_machined_corner_brackets(page):
+    """A gradient rim lights the whole edge; brackets mark the corners.
+
+    The corners need to sit *on* the rounded edge, which no border value can
+    do, so they are a pseudo-element on an injected carrier span.
+    """
+    assert 'class="panel panel-hero ticked bracket"' in page
+    assert page.count("panel bracket") >= 8, "too few panels are bracketed"
+
+    script = (STATIC / "app.js").read_text(encoding="utf-8")
+    assert '".bracket-corners"' in script, "the corner carrier is never injected"
+    assert 'aria-hidden", "true"' in script, "decorative corners must be hidden"
+
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    # The two rules are written as a shared selector list, so both cuts live in
+    # the block that follows the shared opener.
+    shared = css.split(".panel.bracket > .bracket-corners::before,")[1]
+    assert "border-right: 0" in shared, "the top-left bracket is not cut"
+    assert "border-bottom-right-radius" in shared, "the brackets are not rounded"
+    assert "border-top-left-radius" in shared, "the brackets are not rounded"
+    assert "rimSweep" in css, "the moving rim highlight is missing"
+    assert "@keyframes rimSweep" in css
+
+
+def test_corner_rim_motion_and_backdrop_both_stop_under_reduced_motion():
+    css = (STATIC / "styles.css").read_text(encoding="utf-8")
+    marker = "@media (prefers-reduced-motion: reduce)"
+    blocks = "\n".join(css.split(marker)[1:])
+    assert ".map-layer" in blocks and "animation: none" in blocks, (
+        "the drifting backdrop still animates under reduced motion"
+    )
+    assert "bracket-corners" in blocks and "animation: none" in blocks, (
+        "the moving panel rim still animates under reduced motion"
+    )
+
+
 def test_the_donut_centre_figure_is_readable_on_a_dark_panel():
     """Regression: the count was drawn #1a202c on a near-black card.
 
