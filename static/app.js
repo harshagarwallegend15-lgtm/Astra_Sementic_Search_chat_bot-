@@ -1,506 +1,619 @@
-/* ASTRA INTEL — console logic.
-   No framework, no build step. The API already does the grounding work, so the
-   job here is: render the answer faithfully, keep the citation markers clickable,
-   and maintain the KPI counters. */
+/* ASTRA INTEL - corpus operations console.
+   Vanilla ES2020, no build step and no CDN: charts are hand-drawn SVG so the
+   console still works on an isolated network where Chart.js could not load. */
 
-"use strict";
+const $ = (id) => document.getElementById(id);
 
-const $ = (sel) => document.querySelector(sel);
-const el = (tag, cls, text) => {
-  const node = document.createElement(tag);
-  if (cls) node.className = cls;
-  if (text !== undefined && text !== null) node.textContent = String(text);
-  return node;
+const STATUS = {
+  grounded:            { label: "Grounded",      cls: "badge-grounded", color: "#38a169" },
+  partially_grounded:  { label: "Partial",       cls: "badge-warn",     color: "#ed8936" },
+  no_context:          { label: "No Context",    cls: "badge-no_context", color: "#e53e3e" },
+  error:               { label: "Failed",        cls: "badge-error",    color: "#e53e3e" },
 };
 
 const state = {
-  queries: 0,
-  grounded: 0,
-  confidenceSum: 0,
-  files: [],
+  documents: [],
+  settings: {},
+  llmReady: false,
+  stats: {},
+  log: [],
+  filter: "all",
+  sort: { key: "chunk_count", dir: -1 },
+  selected: null,
 };
 
-/* ── status vocabulary ─────────────────────────────────────────────── */
+// ------------------------------------------------------------------ utils --
 
-const STATUS = {
-  grounded:             { label: "Grounded",             cls: "badge-ok" },
-  partially_grounded:   { label: "Partial",              cls: "badge-warn" },
-  ungrounded:           { label: "Ungrounded",           cls: "badge-danger" },
-  no_context:           { label: "No Evidence",          cls: "badge-danger" },
-};
+async function api(path, options = {}) {
+  const response = await fetch(path, options);
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const body = await response.json();
+      detail = body.detail || detail;
+    } catch (_) { /* non-JSON error body; keep the status text */ }
+    throw new Error(detail);
+  }
+  return response.status === 204 ? null : response.json();
+}
 
-/* ── tiny markdown renderer ─────────────────────────────────────────
-   The model already emits [S1] markers and light markdown. A full parser is
-   out of scope, so this handles the subset that matters: paragraphs, bullets,
-   bold/italic/code, and citation markers. Anything else is escaped and shown
-   literally rather than injected as HTML. */
+const jsonPost = (path, body) =>
+  api(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 
-function escapeHtml(text) {
-  return String(text)
-    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function toast(message, kind = "") {
+  const node = document.createElement("div");
+  node.className = "toast " + kind;
+  node.textContent = message;
+  $("toasts").appendChild(node);
+  setTimeout(() => node.remove(), 4200);
+}
+
+function esc(value) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+
+function badge(status) {
+  const meta = STATUS[status] || { label: status || "unknown", cls: "badge-mute" };
+  return `<span class="badge ${meta.cls}">${esc(meta.label)}</span>`;
+}
+
+/* Minimal markdown: the model answers with short prose plus bullet lists, so
+   bold and inline code are the only inline marks worth handling. Escaping
+   happens first, which keeps this safe against injected HTML. */
+function md(text) {
+  const safe = esc(text || "");
+  return safe
+    .split(/\n{2,}/)
+    .map((block) => {
+      const lines = block.split("\n").filter((l) => l.trim());
+      if (!lines.length) return "";
+      if (lines.every((l) => /^\s*[-*]\s+/.test(l))) {
+        return "<ul>" + lines.map((l) =>
+          "<li>" + inline(l.replace(/^\s*[-*]\s+/, "")) + "</li>").join("") + "</ul>";
+      }
+      if (lines.every((l) => /^\s*\d+[.)]\s+/.test(l))) {
+        return "<ol>" + lines.map((l) =>
+          "<li>" + inline(l.replace(/^\s*\d+[.)]\s+/, "")) + "</li>").join("") + "</ol>";
+      }
+      return "<p>" + lines.map(inline).join("<br>") + "</p>";
+    })
+    .join("");
 }
 
 function inline(text) {
-  let html = escapeHtml(text);
-  html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-  // [S1] / [S2, S3] become hoverable markers.
-  html = html.replace(/\[(S\s?\d{1,3}(?:\s*,\s*S?\s?\d{1,3})*)\]/g, (match, body) => {
-    const ids = body.split(",").map((s) => s.replace(/\s+/g, "").toUpperCase());
-    return ids
-      .map((id) => `<span class="cite-marker" title="Source ${id}">${id}</span>`)
-      .join(" ");
-  });
-  return html;
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[\s(])_(.+?)_(?=$|[\s.,;:)])/g, "$1<em>$2</em>")
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    // Citation markers, normalised server-side, rendered as real superscripts.
+    .replace(/【\s*S(\d+)\s*】|\[\s*S(\d+)\s*\]/g,
+      (_, a, b) => `<sup class="cite-ref">S${a || b}</sup>`);
 }
 
-function renderMarkdown(source) {
-  const blocks = [];
-  const lines = String(source || "").split(/\r?\n/);
-  let list = null;
+// ------------------------------------------------------------------- donut --
 
-  const closeList = () => { if (list) { blocks.push(`</${list}>`); list = null; } };
-
-  for (const raw of lines) {
-    const line = raw.trimEnd();
-    if (!line.trim()) { closeList(); continue; }
-
-    const bullet = line.match(/^\s*[-*•]\s+(.*)$/);
-    if (bullet) {
-      if (list !== "ul") { closeList(); blocks.push("<ul>"); list = "ul"; }
-      blocks.push(`<li>${inline(bullet[1])}</li>`);
-      continue;
-    }
-    const numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
-    if (numbered) {
-      if (list !== "ol") { closeList(); blocks.push("<ol>"); list = "ol"; }
-      blocks.push(`<li>${inline(numbered[1])}</li>`);
-      continue;
-    }
-    closeList();
-    blocks.push(`<p>${inline(line)}</p>`);
+function drawDonut() {
+  const svg = $("donut");
+  const total = state.log.length;
+  const counts = { grounded: 0, partially_grounded: 0, no_context: 0, error: 0 };
+  for (const row of state.log) {
+    if (counts[row.status] === undefined) counts[row.status] = 0;
+    counts[row.status] += 1;
   }
-  closeList();
-  return blocks.join("");
-}
 
-/* ── toasts ────────────────────────────────────────────────────────── */
-
-function toast(message, kind = "") {
-  const node = el("div", `toast ${kind}`.trim(), message);
-  $("#toastHost").appendChild(node);
-  setTimeout(() => node.remove(), 5200);
-}
-
-/* ── network ───────────────────────────────────────────────────────── */
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: options.body instanceof FormData ? {} : { "Content-Type": "application/json" },
-    ...options,
-  });
-  let payload = null;
-  try { payload = await response.json(); } catch (_) { /* empty body */ }
-  if (!response.ok) {
-    throw new Error((payload && payload.detail) || `Request failed (${response.status})`);
-  }
-  return payload;
-}
-
-/* ── KPI + register ────────────────────────────────────────────────── */
-
-function paintKpis() {
-  $("#kpiQueries").textContent = state.queries;
-  const answered = state.grounded + state.confidenceCount || 0;
-  $("#kpiGrounded").textContent = answered ? `${Math.round((state.grounded / answered) * 100)}%` : "—";
-  $("#kpiConfidence").textContent = answered
-    ? (state.confidenceSum / answered).toFixed(2)
-    : "—";
-}
-
-function paintRegister(documents) {
-  const body = $("#docBody");
-  body.replaceChildren();
-  if (!documents.length) {
-    const row = el("tr", "grid-empty");
-    const cell = el("td", null, "No documents indexed.");
-    cell.colSpan = 5;
-    row.appendChild(cell);
-    body.appendChild(row);
+  if (!total) {
+    svg.innerHTML =
+      '<circle cx="100" cy="100" r="70" fill="none" stroke="#edf2f7" stroke-width="26"/>' +
+      '<text x="100" y="97" text-anchor="middle" fill="#718096" font-size="15" font-weight="600">0</text>' +
+      '<text x="100" y="116" text-anchor="middle" fill="#a0aec0" font-size="10">queries</text>';
+    $("donut-legend").innerHTML = "";
     return;
   }
-  documents.forEach((doc) => {
-    const row = el("tr");
 
-    const title = el("td", "ttl");
-    title.appendChild(document.createTextNode(doc.title));
-    title.appendChild(el("span", "sub", doc.filename));
-    row.appendChild(title);
+  const radius = 70;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+  let rings = "";
+  Object.keys(STATUS).forEach((key) => {
+    const count = counts[key] || 0;
+    if (!count) return;
+    const length = (count / total) * circumference;
+    rings += `<circle cx="100" cy="100" r="${radius}" fill="none"
+      stroke="${STATUS[key].color}" stroke-width="26"
+      stroke-dasharray="${length} ${circumference - length}"
+      stroke-dashoffset="${-offset}" transform="rotate(-90 100 100)">
+      <title>${STATUS[key].label}: ${count}</title></circle>`;
+    offset += length;
+  });
 
-    row.appendChild(el("td", "num", doc.page_count));
-    row.appendChild(el("td", "num", doc.chunk_count));
+  svg.innerHTML = rings +
+    `<text x="100" y="99" text-anchor="middle" fill="#1a202c" font-size="24" font-weight="700">${total}</text>` +
+    `<text x="100" y="117" text-anchor="middle" fill="#718096" font-size="10">queries</text>`;
 
-    const status = el("td");
-    const live = doc.chunk_count > 0;
-    status.appendChild(el("span", `badge ${live ? "badge-ok" : "badge-muted"}`,
-      live ? "INDEXED" : "EMPTY"));
-    row.appendChild(status);
+  $("donut-legend").innerHTML = Object.keys(STATUS)
+    .filter((key) => counts[key])
+    .map((key) => `<li><span class="sw" style="background:${STATUS[key].color}"></span>
+        ${STATUS[key].label}<span class="n">${counts[key]}</span></li>`)
+    .join("");
+}
 
-    const actions = el("td");
-    const drop = el("button", "btn btn-ghost", "Remove");
-    drop.title = `Remove ${doc.title} from the index`;
-    drop.addEventListener("click", async () => {
-      drop.disabled = true;
-      try {
-        await api(`/api/documents/${encodeURIComponent(doc.document_id)}`, { method: "DELETE" });
-        toast(`Removed "${doc.title}".`, "ok");
-        await refresh();
-      } catch (err) {
-        toast(err.message, "err");
-        drop.disabled = false;
-      }
-    });
-    actions.appendChild(drop);
-    row.appendChild(actions);
+// -------------------------------------------------------------------- bars --
 
-    body.appendChild(row);
+function drawBars() {
+  const rows = [...state.documents].sort((a, b) => b.chunk_count - a.chunk_count);
+  if (!rows.length) {
+    $("bars").innerHTML = '<p class="muted tiny">No documents indexed.</p>';
+    return;
+  }
+  const max = Math.max(...rows.map((d) => d.chunk_count), 1);
+  $("bars").innerHTML = rows.map((d) => {
+    const ratio = d.chunk_count / max;
+    // Same 70%-of-capability read as a bin fill level, but relative to the
+    // largest document rather than an invented capacity.
+    const tier = ratio >= 0.7 ? "t-high" : ratio >= 0.3 ? "t-mid" : "t-low";
+    return `<div class="bar-row">
+      <span class="name" title="${esc(d.title)}">${esc(d.title)}</span>
+      <span class="bar-track"><span class="bar-fill ${tier}" style="width:${(ratio * 100).toFixed(1)}%"></span></span>
+      <span class="val">${d.chunk_count}</span>
+    </div>`;
+  }).join("");
+}
+
+// -------------------------------------------------------------- document status --
+
+function docStatus(doc) {
+  if (!doc.chunk_count) return { key: "none", label: "Unindexed", cls: "badge-no_context" };
+  const coverage = doc.page_count ? doc.indexed_pages / doc.page_count : 1;
+  if (coverage >= 1) return { key: "full", label: "Fully indexed", cls: "badge-grounded" };
+  if (coverage >= 0.6) return { key: "partial", label: "Part indexed", cls: "badge-warn" };
+  return { key: "sparse", label: "Sparse", cls: "badge-mute" };
+}
+
+// ---------------------------------------------------------------- register --
+
+function drawRegister() {
+  const body = $("register-table").tBodies[0];
+  const key = state.sort.key;
+  const rows = [...state.documents].sort((a, b) => {
+    if (key === "coverage") {
+      const ca = a.page_count ? a.indexed_pages / a.page_count : 0;
+      const cb = b.page_count ? b.indexed_pages / b.page_count : 0;
+      return (ca - cb) * state.sort.dir;
+    }
+    const av = a[key] ?? 0;
+    const bv = b[key] ?? 0;
+    if (typeof av === "string") return av.localeCompare(bv) * state.sort.dir;
+    return (av - bv) * state.sort.dir;
+  });
+
+  $("register-count").textContent =
+    `${state.documents.length} document${state.documents.length === 1 ? "" : "s"}`;
+
+  if (!rows.length) {
+    body.innerHTML = '<tr class="empty"><td colspan="6">The index is empty. Ingest a PDF to begin.</td></tr>';
+    return;
+  }
+
+  body.innerHTML = rows.map((d) => {
+    const meta = docStatus(d);
+    const coverage = d.page_count ? d.indexed_pages / d.page_count : 0;
+    const pct = (coverage * 100).toFixed(0);
+    return `<tr data-doc="${esc(d.document_id)}" class="${state.selected === d.document_id ? "is-selected" : ""}">
+      <td>
+        <div class="cell-title">${esc(d.title)}</div>
+        <div class="cell-sub">${esc(d.filename)}</div>
+      </td>
+      <td class="num">${d.chunk_count}</td>
+      <td class="num">${d.page_count}</td>
+      <td>
+        <span class="coverage">
+          <span class="bar-track"><span class="bar-fill ${pct >= 99 ? "t-high" : "t-mid"}" style="width:${pct}%"></span></span>
+          <span class="pct">${pct}%</span>
+        </span>
+      </td>
+      <td><span class="badge ${meta.cls}">${esc(meta.label)}</span></td>
+      <td class="num">
+        <button class="btn btn-ghost btn-mini btn-danger-ghost" data-remove="${esc(d.document_id)}">Remove</button>
+      </td>
+    </tr>`;
+  }).join("");
+
+  document.querySelectorAll("#register-table thead th[data-sort]").forEach((th) => {
+    th.classList.toggle("is-sorted", th.dataset.sort === state.sort.key);
   });
 }
 
-async function refresh() {
-  const data = await api("/api/state");
-  const stats = data.stats || {};
+// ------------------------------------------------------------- corpus grid --
 
-  $("#kpiDocs").textContent = stats.documents ?? 0;
-  $("#kpiChunks").textContent = stats.chunks ?? 0;
-  const avg = stats.documents ? Math.round((stats.chunks || 0) / stats.documents) : 0;
-  $("#kpiDocsFoot").textContent = stats.documents ? `avg ${avg} passages each` : "index is empty";
-  $("#kpiChunksFoot").textContent = `${stats.vectors ?? 0} vectors stored`;
+function drawCorpus() {
+  const grid = $("corpus-grid");
+  const legend = $("scale-legend");
+  if (!state.documents.length) {
+    grid.innerHTML = '<p class="muted tiny">Nothing indexed yet.</p>';
+    return "";
+  }
 
-  $("#metaProvider").textContent = stats.llm_provider ?? "—";
-  $("#metaModel").textContent = stats.llm_model ?? "—";
-  $("#metaEmbed").textContent = (stats.embedding_model ?? "—").split("/").pop();
+  // A single scale across every document, so a pale cell in a small document
+  // means the same thing as a pale cell in a large one.
+  const peak = Math.max(
+    1,
+    ...state.documents.flatMap((d) => (d.pages || []).map((p) => p.passages)),
+  );
+  const steps = [0.08, 0.3, 0.55, 0.78, 1].map((f) => {
+    const mix = Math.round(f * 255);
+    return `<i style="background:rgba(49,130,206,${0.1 + f * 0.85})"></i>`;
+  }).join("");
+  legend.innerHTML = `<span>1 passage</span>
+    <span class="scale-steps">${steps}</span>
+    <span>${peak} passages / page</span>
+    <span class="muted">&middot; each square is one page</span>`;
 
-  const badge = $("#llmBadge");
-  badge.className = `badge ${data.llm_ready ? "badge-ok" : "badge-warn"}`;
-  badge.textContent = data.llm_ready ? "MODEL ONLINE" : "EVIDENCE ONLY";
-
-  paintRegister(data.documents || []);
-  paintKpis();
-  return data;
+  grid.innerHTML = state.documents.map((d) => {
+    const cells = (d.pages || []).map((p) => {
+      const alpha = 0.1 + (p.passages / peak) * 0.85;
+      const hint = p.passages
+        ? ` data-hint title="${esc(d.title)} p.${p.page} - ${p.passages} passage${p.passages === 1 ? "" : "s"}"`
+        : ` title="${esc(d.title)} p.${p.page} - no passages extracted"`;
+      return `<span class="cell" style="background:rgba(49,130,206,${alpha.toFixed(2)})"${hint}></span>`;
+    }).join("");
+    return `<div class="corpus-row">
+      <span class="corpus-label" title="${esc(d.title)}">${esc(d.title)}</span>
+      <span class="corpus-cells">${cells}</span>
+    </div>`;
+  }).join("");
 }
 
-/* ── suggestions ───────────────────────────────────────────────────── */
+// ------------------------------------------------------------ ops / config --
 
-const FALLBACK_QUESTIONS = [
-  "What are the main categories or classes of UAVs described in the documents?",
-  "How does the Electronic warfare document distinguish jamming from deception?",
-  "Compare unmanned aerial and unmanned ground vehicles: what roles do they share?",
-];
+function drawOps() {
+  const panel = $("ops-panel");
+  const doc = state.documents.find((d) => d.document_id === state.selected);
+  if (!doc) {
+    panel.innerHTML = '<p class="muted">Select a row in the register to inspect its density profile.</p>';
+    return;
+  }
+  const pages = doc.pages || [];
+  const withPassages = pages.filter((p) => p.passages > 0);
+  const peak = Math.max(1, ...pages.map((p) => p.passages));
+  const busiest = pages.slice().sort((a, b) => b.passages - a.passages).slice(0, 5);
+
+  panel.innerHTML = `
+    <h3>${esc(doc.title)}</h3>
+    <dl>
+      <dt>Pages parsed</dt><dd>${doc.page_count}</dd>
+      <dt>Pages with passages</dt><dd>${withPassages.length}</dd>
+      <dt>Passages</dt><dd>${doc.chunk_count}</dd>
+      <dt>Mean passages / page</dt><dd>${doc.page_count ? (doc.chunk_count / doc.page_count).toFixed(1) : "0"}</dd>
+      <dt>Peak page density</dt><dd>${peak}</dd>
+    </dl>
+    <h3>Densest pages</h3>
+    <ul class="key">${busiest.map((p) => `<li>
+        <span class="sw" style="background:rgba(49,130,206,${(0.1 + (p.passages / peak) * 0.85).toFixed(2)})"></span>
+        Page ${p.page}<span style="margin-left:auto;font-variant-numeric:tabular-nums">${p.passages}</span>
+      </li>`).join("")}</ul>`;
+}
+
+function drawConfig() {
+  $("config-json").textContent = JSON.stringify({
+    settings: state.settings,
+    stats: state.stats,
+    llm_ready: state.llmReady,
+  }, null, 2);
+}
+
+function drawKpis() {
+  // The store reports `chunks`; fall back to the per-document sum so the KPI
+  // still reads correctly if that key ever changes or is absent.
+  const summed = state.documents.reduce((sum, d) => sum + (d.chunk_count || 0), 0);
+  const chunks = state.stats.chunks ?? state.stats.chunk_count ?? summed;
+  const pages = state.documents.reduce((sum, d) => sum + (d.page_count || 0), 0);
+  $("kpi-documents").textContent = state.documents.length;
+  $("kpi-documents-foot").textContent = `${pages} pages parsed`;
+  $("kpi-passages").textContent = chunks;
+  $("kpi-pages").textContent = pages;
+
+  const counts = { grounded: 0, partially_grounded: 0, no_context: 0 };
+  for (const row of state.log) if (counts[row.status] !== undefined) counts[row.status] += 1;
+  $("kpi-grounded").textContent = counts.grounded;
+  $("kpi-partial").textContent = counts.partially_grounded;
+  $("kpi-nocontext").textContent = counts.no_context;
+}
+
+function drawLog() {
+  const body = $("log-table").tBodies[0];
+  const rows = state.filter === "all"
+    ? state.log
+    : state.log.filter((r) => r.status === state.filter);
+
+  $("log-count").textContent = state.log.length
+    ? `${rows.length} of ${state.log.length} shown`
+    : "no queries yet";
+
+  const note = $("filter-note");
+  if (state.filter === "all") {
+    note.hidden = true;
+  } else {
+    const meta = STATUS[state.filter];
+    note.hidden = false;
+    note.innerHTML = `<span>Filtered to <strong>${esc(meta ? meta.label : state.filter)}</strong> answers.</span>
+      <button class="btn btn-ghost btn-mini" id="clear-filter">Clear filter</button>`;
+    $("clear-filter").onclick = () => setFilter("all");
+  }
+
+  if (!rows.length) {
+    body.innerHTML = `<tr class="empty"><td colspan="5">${
+      state.log.length ? "No queries match this filter." : "No queries recorded in this session."
+    }</td></tr>`;
+    return;
+  }
+
+  body.innerHTML = rows.map((r) => `<tr>
+    <td><div class="cell-title">${esc(r.question)}</div></td>
+    <td>${badge(r.status)}</td>
+    <td class="num">${r.confidence === null ? "&mdash;" : r.confidence.toFixed(2)}</td>
+    <td class="num">${r.sources}</td>
+    <td class="num">${(r.latency_ms / 1000).toFixed(1)}s</td>
+  </tr>`).join("");
+}
+
+function setFilter(filter) {
+  state.filter = filter;
+  document.querySelectorAll(".kpi").forEach((card) => {
+    card.classList.toggle("is-active",
+      card.dataset.filter === filter || (filter === "all" && card.dataset.filter === "all"));
+  });
+  drawLog();
+}
+
+function renderAll() {
+  drawKpis();
+  drawDonut();
+  drawBars();
+  drawRegister();
+  drawCorpus();
+  drawOps();
+  drawConfig();
+  drawLog();
+}
+
+// ------------------------------------------------------------------ actions --
+
+function renderAnswer(payload, question) {
+  const box = $("ask-result");
+  const citations = payload.citations || [];
+  const meta = [
+    badge(payload.status || "error"),
+    `<span class="muted">confidence ${payload.confidence === null || payload.confidence === undefined
+      ? "n/a" : payload.confidence.toFixed(2)}</span>`,
+    payload.latency_ms ? `<span class="muted">${(payload.latency_ms / 1000).toFixed(1)}s</span>` : "",
+    payload.llm_model ? `<span class="muted">${esc(payload.llm_model)}</span>` : "",
+  ].filter(Boolean).join("");
+
+  const cites = citations.length ? `
+    <div class="cites">
+      <h3>Evidence (${citations.length})</h3>
+      ${citations.map((c) => `<div class="cite">
+        <div class="cite-marker">S${esc(c.marker)}</div>
+        <div>
+          <div class="cite-title">${esc(c.title)}</div>
+          <div class="cite-meta">page ${esc(c.page)}${c.section ? " &middot; " + esc(c.section) : ""}
+            &middot; score ${Number(c.score).toFixed(3)}</div>
+          <div class="cite-excerpt">${esc(c.excerpt)}</div>
+        </div>
+      </div>`).join("")}
+    </div>` : "";
+
+  const notes = (payload.notes || []).length
+    ? `<div class="notes">${payload.notes.map((n) => esc(n)).join(" &middot; ")}</div>`
+    : "";
+
+  box.innerHTML = `<div class="answer st-${esc(payload.status || "error")}">
+    <div class="answer-meta">${meta}</div>
+    <div class="answer-body">${md(payload.answer || "No answer was produced.")}</div>
+    ${notes}${cites}
+  </div>`;
+
+  state.log.unshift({
+    question,
+    status: payload.status || "error",
+    confidence: payload.confidence ?? null,
+    sources: new Set(citations.map((c) => c.filename)).size,
+    latency_ms: payload.latency_ms || 0,
+  });
+  renderAll();
+}
+
+async function loadState() {
+  const data = await api("/api/state");
+  state.documents = data.documents || [];
+  state.settings = data.settings || {};
+  state.stats = data.stats || {};
+  state.llmReady = !!data.llm_ready;
+
+  const conn = $("conn");
+  conn.className = "conn " + (state.llmReady ? "is-live" : "is-off");
+  conn.querySelector(".conn-label").textContent = state.llmReady
+    ? (state.settings.llm_model || "model ready")
+    : "no model configured";
+
+  $("engine-line").textContent = state.llmReady
+    ? `retrieval + grounded synthesis via ${state.settings.llm_model}`
+    : "retrieval only - no language model configured";
+
+  renderAll();
+}
 
 async function loadSuggestions() {
-  const host = $("#suggestions");
-  host.replaceChildren();
-  let questions = FALLBACK_QUESTIONS;
   try {
-    const response = await fetch("/api/suggestions");
-    if (response.ok) {
-      const payload = await response.json();
-      if (Array.isArray(payload.questions) && payload.questions.length) questions = payload.questions;
-    }
-  } catch (_) { /* keep the fallbacks */ }
-
-  questions.slice(0, 8).forEach((question) => {
-    const button = el("button", null, question.length > 78 ? `${question.slice(0, 75)}…` : question);
-    button.title = question;
-    button.addEventListener("click", () => {
-      $("#queryInput").value = question;
-      $("#queryInput").focus();
+    const { questions } = await api("/api/suggestions");
+    $("suggestions").innerHTML = questions.slice(0, 6).map((q) =>
+      `<button class="chip" type="button">${esc(q)}</button>`).join("");
+    $("suggestions").querySelectorAll(".chip").forEach((chip) => {
+      chip.onclick = () => { $("ask-input").value = chip.textContent; $("ask-input").focus(); };
     });
-    host.appendChild(button);
-  });
+  } catch (_) { /* suggestions are optional chrome */ }
 }
 
-/* ── console log ───────────────────────────────────────────────────── */
+// -------------------------------------------------------------------- wiring --
 
-function renderCitations(citations) {
-  const wrap = el("div", "evidence");
-  wrap.appendChild(Object.assign(el("div", "evidence-head"), {}));
-  wrap.lastChild.appendChild(el("span", null, "Evidence Register"));
-  wrap.lastChild.appendChild(el("span", null, `${citations.length} passage(s)`));
-
-  citations.forEach((citation) => {
-    const card = el("div", "cite");
-    const top = el("div", "cite-top");
-    top.appendChild(el("span", "cite-mk", `[${citation.marker || "S"}]`));
-    top.appendChild(el("span", "cite-title", citation.title));
-    top.appendChild(el("span", "cite-where",
-      `page ${citation.page}${citation.section ? ` · ${citation.section}` : ""}`));
-    top.appendChild(el("span", "cite-score", Number(citation.score).toFixed(3)));
-    card.appendChild(top);
-    card.appendChild(el("div", "cite-text", citation.excerpt));
-    wrap.appendChild(card);
+function bind() {
+  document.querySelectorAll(".nav-item").forEach((item) => {
+    item.onclick = () => {
+      document.querySelectorAll(".nav-item").forEach((n) => n.classList.remove("is-active"));
+      item.classList.add("is-active");
+      const view = item.dataset.view;
+      document.querySelectorAll(".view").forEach((v) => v.classList.remove("is-active"));
+      $("view-" + view).classList.add("is-active");
+      const titles = {
+        dashboard: ["Operations Dashboard", "Live status across the indexed document corpus."],
+        documents: ["Document Register", "Index composition, coverage and intake."],
+        corpus: ["Corpus Grid", "Where the indexed material actually sits, page by page."],
+        analytics: ["Briefings", "Per-document summaries generated from the corpus."],
+        config: ["Configuration", "Runtime settings reported by the backend."],
+      };
+      $("view-title").textContent = titles[view][0];
+      $("view-sub").textContent = titles[view][1];
+    };
   });
-  return wrap;
-}
 
-function renderRetrieved(retrieved) {
-  if (!retrieved || !retrieved.length) return null;
-  const details = el("details", "retrieved");
-  details.appendChild(el("summary", null, `Retrieved passages (${retrieved.length})`));
-  const table = el("table");
-  const tbody = el("tbody");
-  retrieved.forEach((item) => {
-    const row = el("tr");
-    row.appendChild(el("td", "mono", Number(item.score).toFixed(3)));
-    const cell = el("td");
-    cell.textContent = `${item.chunk.title} — p.${item.chunk.page}`
-      + (item.chunk.section ? ` · ${item.chunk.section}` : "");
-    row.appendChild(cell);
-    tbody.appendChild(row);
+  document.querySelectorAll(".kpi").forEach((card) => {
+    card.onclick = () => setFilter(card.dataset.filter);
   });
-  table.appendChild(tbody);
-  details.appendChild(table);
-  return details;
-}
 
-function appendEntry({ question, badge, meta, answerHtml, citations, retrieved, notes }) {
-  const log = $("#consoleLog");
-  const placeholder = log.querySelector(".empty-state");
-  if (placeholder) placeholder.remove();
+  document.querySelectorAll("#register-table thead th[data-sort]").forEach((th) => {
+    th.onclick = () => {
+      const key = th.dataset.sort;
+      state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : (key === "title" ? 1 : -1) };
+      drawRegister();
+    };
+  });
 
-  const entry = el("div", "entry");
-
-  const head = el("div", "entry-head");
-  head.appendChild(el("span", "entry-q", question));
-  const right = el("div", "entry-meta");
-  if (badge) right.appendChild(badge);
-  right.appendChild(el("span", null, meta));
-  head.appendChild(right);
-  entry.appendChild(head);
-
-  const body = el("div", "entry-body");
-  const answer = el("div", "answer");
-  answer.innerHTML = answerHtml;
-  body.appendChild(answer);
-
-  (notes || []).forEach((note) => body.appendChild(el("div", "note", note)));
-
-  if (citations && citations.length) body.appendChild(renderCitations(citations));
-
-  const extras = renderRetrieved(retrieved);
-  if (extras) body.appendChild(extras);
-
-  if (citations && citations.length) {
-    const actions = el("div", "entry-actions");
-    const copy = el("button", "btn btn-ghost", "Copy with sources");
-    copy.addEventListener("click", async () => {
-      const text = [question, "", answer.textContent, "", ...citations.map(
-        (c) => `[${c.marker || "S"}] ${c.title}, page ${c.page}\n${c.excerpt}`)].join("\n");
+  $("register-table").tBodies[0].addEventListener("click", async (event) => {
+    const removeId = event.target.closest("[data-remove]");
+    if (removeId) {
+      event.stopPropagation();
+      const id = removeId.dataset.remove;
+      if (!confirm("Remove this document and its passages from the index?")) return;
       try {
-        await navigator.clipboard.writeText(text);
-        toast("Copied answer and sources to the clipboard.", "ok");
-      } catch (_) {
-        toast("Clipboard blocked by the browser.", "err");
-      }
-    });
-    actions.appendChild(copy);
-    body.appendChild(actions);
-  }
-
-  entry.appendChild(body);
-  log.appendChild(entry);
-  log.scrollTop = log.scrollHeight;
-}
-
-function statusBadge(status) {
-  const spec = STATUS[status] || { label: status || "unknown", cls: "badge-muted" };
-  return el("span", `badge ${spec.cls}`, spec.label);
-}
-
-/* ── actions ───────────────────────────────────────────────────────── */
-
-async function submit(path, question, label) {
-  const trimmed = question.trim();
-  if (!trimmed) { toast("Enter a question first.", "err"); return; }
-
-  document.body.classList.add("busy");
-  const log = $("#consoleLog");
-  const placeholder = log.querySelector(".empty-state");
-  if (placeholder) placeholder.remove();
-  const spinner = el("div", "spinner-row", label);
-  log.appendChild(spinner);
-  log.scrollTop = log.scrollHeight;
-
-  const started = performance.now();
-  try {
-    const data = await api(path, { method: "POST", body: JSON.stringify({ question: trimmed }) });
-    spinner.remove();
-    const seconds = ((performance.now() - started) / 1000).toFixed(1);
-
-    if (path === "/api/ask") {
-      state.queries += 1;
-      state.confidenceCount = (state.confidenceCount || 0) + 1;
-      state.confidenceSum += Number(data.confidence || 0);
-      if (data.status === "grounded") state.grounded += 1;
-
-      appendEntry({
-        question: trimmed,
-        badge: statusBadge(data.status),
-        meta: `conf ${Number(data.confidence).toFixed(2)} · ${seconds}s`
-          + (data.llm_model ? ` · ${data.llm_model}` : ""),
-        answerHtml: renderMarkdown(data.answer),
-        citations: data.citations,
-        retrieved: data.retrieved,
-        notes: data.notes,
-      });
-    } else {
-      state.queries += 1;
-      appendEntry({
-        question: trimmed,
-        badge: el("span", "badge badge-info", "EVIDENCE"),
-        meta: `${(data.citations || []).length} passage(s) · ${seconds}s · no model call`,
-        answerHtml: `<p>Retrieval only — the corpus was searched for passages above the
-          relevance threshold without calling the language model.</p>`,
-        citations: data.citations,
-      });
+        await api("/api/documents/" + encodeURIComponent(id), { method: "DELETE" });
+        if (state.selected === id) state.selected = null;
+        toast("Document removed.", "ok");
+        await loadState();
+      } catch (err) { toast(err.message, "err"); }
+      return;
     }
-    paintKpis();
-  } catch (err) {
-    spinner.remove();
-    toast(err.message, "err");
-  } finally {
-    document.body.classList.remove("busy");
-  }
-}
+    const row = event.target.closest("tr[data-doc]");
+    if (!row) return;
+    state.selected = state.selected === row.dataset.doc ? null : row.dataset.doc;
+    drawRegister();
+    drawOps();
+  });
 
-/* ── wiring ────────────────────────────────────────────────────────── */
-
-function wire() {
-  $("#queryForm").addEventListener("submit", (event) => {
+  $("ask-form").onsubmit = async (event) => {
     event.preventDefault();
-    submit("/api/ask", $("#queryInput").value, "Retrieving and composing a grounded answer…");
-  });
-
-  $("#btnEvidence").addEventListener("click", () => {
-    submit("/api/evidence", $("#queryInput").value, "Retrieving passages…");
-  });
-
-  $("#btnClearChat").addEventListener("click", () => {
-    $("#consoleLog").replaceChildren();
-    state.queries = 0; state.grounded = 0;
-    state.confidenceSum = 0; state.confidenceCount = 0;
-    const empty = el("div", "empty-state");
-    empty.appendChild(el("h3", null, "No queries logged"));
-    empty.appendChild(el("p", null,
-      "Every response is verified against the retrieved pages. If the indexed "
-      + "documents do not cover a question, the console reports that rather "
-      + "than composing an unsupported answer."));
-    $("#consoleLog").appendChild(empty);
-    paintKpis();
-  });
-
-  $("#fileInput").addEventListener("change", (event) => {
-    state.files = Array.from(event.target.files || []);
-    $("#btnIndex").disabled = state.files.length === 0;
-  });
-
-  const dropzone = $("#dropzone");
-  ["dragenter", "dragover"].forEach((type) =>
-    dropzone.addEventListener(type, (event) => {
-      event.preventDefault(); dropzone.classList.add("drag");
-    }));
-  ["dragleave", "drop"].forEach((type) =>
-    dropzone.addEventListener(type, (event) => {
-      event.preventDefault(); dropzone.classList.remove("drag");
-    }));
-  dropzone.addEventListener("drop", (event) => {
-    state.files = Array.from(event.dataTransfer.files || []);
-    $("#btnIndex").disabled = state.files.length === 0;
-    if (state.files.length) toast(`${state.files.length} file(s) staged.`);
-  });
-
-  $("#btnIndex").addEventListener("click", async () => {
-    if (!state.files.length) return;
-    document.body.classList.add("busy");
+    const input = $("ask-input");
+    const question = input.value.trim();
+    if (!question) return;
+    const submit = $("ask-submit");
+    submit.disabled = true;
+    submit.textContent = $("ask-mode").value === "evidence" ? "Retrieving" : "Thinking";
     try {
-      const form = new FormData();
-      state.files.forEach((file) => form.append("files", file));
-      const data = await api("/api/upload", { method: "POST", body: form });
-      const added = (data.added || []).length;
-      if (added) toast(`Indexed ${added} document(s), +${data.chunk_count} passages.`, "ok");
-      (data.duplicates || []).forEach((name) => toast(`Already indexed: ${name}`));
-      Object.entries(data.failures || {}).forEach(([name, why]) => toast(`${name}: ${why}`, "err"));
-      state.files = [];
-      $("#fileInput").value = "";
-      $("#btnIndex").disabled = true;
-      await refresh();
+      const mode = $("ask-mode").value;
+      const payload = mode === "evidence"
+        ? await jsonPost("/api/evidence", { question })
+        : await jsonPost("/api/ask", { question });
+      if (mode === "evidence") {
+        renderAnswer({
+          status: payload.citations.length ? "grounded" : "no_context",
+          answer: payload.citations.length
+            ? `Retrieved ${payload.citations.length} supporting passage(s) without calling the model.`
+            : "No passage in the index matched that question.",
+          citations: payload.citations,
+          notes: ["Evidence-only mode: no model call, no synthesised text."],
+          latency_ms: null,
+        }, question);
+      } else {
+        renderAnswer(payload, question);
+      }
+      input.value = "";
     } catch (err) {
+      renderAnswer({ status: "error", answer: "The request failed: " + err.message, citations: [] }, question);
       toast(err.message, "err");
     } finally {
-      document.body.classList.remove("busy");
+      submit.disabled = false;
+      submit.textContent = "Run Query";
     }
-  });
+  };
 
-  $("#btnRebuild").addEventListener("click", async () => {
-    document.body.classList.add("busy");
+  $("upload-form").onsubmit = async (event) => {
+    event.preventDefault();
+    const input = $("upload-input");
+    if (!input.files.length) { toast("Choose at least one PDF first.", "err"); return; }
+    const form = new FormData();
+    for (const file of input.files) form.append("files", file);
+    const note = $("upload-note");
+    note.textContent = "Ingesting " + input.files.length + " file(s)...";
     try {
-      const data = await api("/api/rebuild", { method: "POST" });
-      toast(`Rebuilt sample index: ${(data.added || []).length} document(s), +${data.chunk_count} passages.`, "ok");
-      await refresh();
+      const result = await api("/api/upload", { method: "POST", body: form });
+      const added = result.added ? result.added.length : 0;
+      note.textContent = `Added ${added}, skipped ${(result.duplicates || []).length} duplicate(s).`;
+      toast(`Indexed ${added} new document(s).`, "ok");
+      input.value = "";
+      await loadState();
     } catch (err) {
-      toast(err.message, "err");
-    } finally {
-      document.body.classList.remove("busy");
-    }
-  });
-
-  $("#btnWipe").addEventListener("click", async () => {
-    if (!window.confirm("Remove every indexed document? This cannot be undone.")) return;
-    try {
-      await api("/api/clear", { method: "POST" });
-      toast("Index wiped.", "ok");
-      await refresh();
-    } catch (err) {
+      note.textContent = "";
       toast(err.message, "err");
     }
-  });
+  };
 
-  $("#btnBriefings").addEventListener("click", async () => {
-    const button = $("#btnBriefings");
+  $("btn-refresh").onclick = () => loadState().then(() => toast("State refreshed.")).catch((e) => toast(e.message, "err"));
+
+  $("btn-rebuild").onclick = async () => {
+    if (!confirm("Rebuild the index from the starter documents?")) return;
+    try {
+      toast("Rebuilding the index...");
+      const result = await jsonPost("/api/rebuild", {});
+      toast(`Rebuilt: ${result.chunk_count} passages.`, "ok");
+      state.selected = null;
+      await loadState();
+    } catch (err) { toast(err.message, "err"); }
+  };
+
+  $("btn-clear").onclick = async () => {
+    if (!confirm("Clear every document from the index? This cannot be undone.")) return;
+    try {
+      await jsonPost("/api/clear", {});
+      state.selected = null;
+      toast("Index cleared.", "ok");
+      await loadState();
+    } catch (err) { toast(err.message, "err"); }
+  };
+
+  $("btn-briefings").onclick = async () => {
+    const button = $("btn-briefings");
     button.disabled = true;
-    button.textContent = "Generating…";
+    button.textContent = "Generating...";
+    $("briefings").innerHTML = '<p class="muted">Summarising each document from the corpus...</p>';
     try {
-      const data = await api("/api/briefings", { method: "POST" });
-      const host = $("#briefingList");
-      host.replaceChildren();
-      (data.summaries || []).forEach((item) => {
-        const card = el("div", "brief-item");
-        card.appendChild(el("h4", null, item.title));
-        card.appendChild(el("p", null, item.summary));
-        if (item.topics && item.topics.length) {
-          card.appendChild(el("div", "brief-topics",
-            `Sections: ${item.topics.slice(0, 8).join(", ")}`));
-        }
-        host.appendChild(card);
-      });
-      toast(`Generated ${(data.summaries || []).length} briefing(s).`, "ok");
+      const { summaries } = await jsonPost("/api/briefings", {});
+      $("briefings").innerHTML = summaries.map((s) => `<div class="brief">
+        <h3>${esc(s.title || s.filename || "Document")}</h3>
+        <div class="body">${md(s.summary || s.text || "")}</div>
+      </div>`).join("") || '<p class="muted">No summaries were produced.</p>';
     } catch (err) {
-      toast(err.message, "err");
+      $("briefings").innerHTML = `<p class="muted">Briefings unavailable: ${esc(err.message)}</p>`;
     } finally {
       button.disabled = false;
-      button.textContent = "Generate briefings";
+      button.textContent = "Generate Briefings";
     }
-  });
+  };
 }
 
-(async function start() {
-  wire();
-  await loadSuggestions();
-  try {
-    await refresh();
-  } catch (err) {
-    toast(`Could not reach the API: ${err.message}`, "err");
-  }
-})();
+bind();
+loadState().then(loadSuggestions).catch((err) => toast("Could not load state: " + err.message, "err"));

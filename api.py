@@ -167,9 +167,28 @@ def _state() -> dict[str, Any]:
     pipeline = get_pipeline()
     llm = pipeline.llm()
     settings = pipeline.settings
+    documents = pipeline.documents()
+
+    # Per-page passage counts, so the console can draw the corpus grid (the
+    # waste-dashboard "map" analogue: where in the corpus the material sits).
+    # Computed here rather than in the browser because the store is the only
+    # thing that knows the real distribution.
+    register: list[dict[str, Any]] = []
+    for meta in documents:
+        histogram: dict[int, int] = {}
+        for chunk in pipeline.chunks_for(meta.document_id):
+            histogram[chunk.page] = histogram.get(chunk.page, 0) + 1
+        entry = _as_dict(meta)
+        entry["pages"] = [
+            {"page": page, "passages": histogram[page]}
+            for page in range(1, (meta.page_count or 0) + 1)
+        ]
+        entry["indexed_pages"] = len(histogram)
+        register.append(entry)
+
     return {
         "stats": _as_dict(pipeline.stats()),
-        "documents": _as_dict(pipeline.documents()),
+        "documents": register,
         "settings": settings.public_dict(),
         "llm_ready": llm is not None,
     }

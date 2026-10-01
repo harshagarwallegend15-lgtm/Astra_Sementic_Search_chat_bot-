@@ -3,133 +3,255 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>ASTRA INTEL — Document Operations</title>
+<title>ASTRA INTEL &middot; Corpus Operations</title>
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
+<div class="shell">
 
-<!-- ── top bar ─────────────────────────────────────────────────────── -->
-<header class="topbar">
-  <div class="brand">
-    <span class="brand-mark" aria-hidden="true"></span>
-    <div>
-      <div class="brand-name">ASTRA&nbsp;INTEL</div>
-      <div class="brand-sub">Document Operations Console</div>
-    </div>
-  </div>
-  <div class="topbar-meta">
-    <span class="meta-item"><span class="meta-key">Provider</span><span id="metaProvider">—</span></span>
-    <span class="meta-item"><span class="meta-key">Model</span><span id="metaModel">—</span></span>
-    <span class="meta-item"><span class="meta-key">Embeddings</span><span id="metaEmbed">—</span></span>
-    <span id="llmBadge" class="badge badge-muted">CHECKING</span>
-  </div>
-</header>
-
-<!-- ── KPI strip ───────────────────────────────────────────────────── -->
-<section class="kpi-strip" id="kpiStrip">
-  <article class="kpi">
-    <div class="kpi-label">Documents</div>
-    <div class="kpi-value" id="kpiDocs">—</div>
-    <div class="kpi-foot" id="kpiDocsFoot">&nbsp;</div>
-  </article>
-  <article class="kpi">
-    <div class="kpi-label">Passages Indexed</div>
-    <div class="kpi-value" id="kpiChunks">—</div>
-    <div class="kpi-foot" id="kpiChunksFoot">&nbsp;</div>
-  </article>
-  <article class="kpi">
-    <div class="kpi-label">Queries Raised</div>
-    <div class="kpi-value" id="kpiQueries">0</div>
-    <div class="kpi-foot" id="kpiQueriesFoot">this session</div>
-  </article>
-  <article class="kpi">
-    <div class="kpi-label">Grounded Rate</div>
-    <div class="kpi-value" id="kpiGrounded">—</div>
-    <div class="kpi-foot">fully cited responses</div>
-  </article>
-  <article class="kpi">
-    <div class="kpi-label">Avg Evidence</div>
-    <div class="kpi-value" id="kpiConfidence">—</div>
-    <div class="kpi-foot">mean confidence</div>
-  </article>
-</section>
-
-<main class="layout">
-
-  <!-- ── left: query console ──────────────────────────────────────── -->
-  <section class="panel panel-query">
-    <div class="panel-head">
-      <h2>Raise a Query</h2>
-      <div class="panel-tools">
-        <button id="btnEvidence" class="btn btn-ghost" title="Retrieval only, no model call">Evidence only</button>
-        <button id="btnClearChat" class="btn btn-ghost" title="Clear the log">Clear log</button>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <strong>ASTRA INTEL</strong>
+        <small>Corpus Operations</small>
       </div>
     </div>
 
-    <div class="suggest-wrap">
-      <span class="field-label">Quick picks</span>
-      <div id="suggestions" class="suggestions"></div>
-    </div>
+    <nav class="nav" aria-label="Sections">
+      <button class="nav-item is-active" data-view="dashboard">
+        <span class="nav-ico" aria-hidden="true">&#9632;</span> Dashboard
+      </button>
+      <button class="nav-item" data-view="documents">
+        <span class="nav-ico" aria-hidden="true">&#9635;</span> Documents
+      </button>
+      <button class="nav-item" data-view="corpus">
+        <span class="nav-ico" aria-hidden="true">&#9638;</span> Corpus Grid
+      </button>
+      <button class="nav-item" data-view="analytics">
+        <span class="nav-ico" aria-hidden="true">&#9707;</span> Briefings
+      </button>
+      <button class="nav-item" data-view="config">
+        <span class="nav-ico" aria-hidden="true">&#9881;</span> Configuration
+      </button>
+    </nav>
 
-    <form id="queryForm" class="query-form">
-      <textarea id="queryInput" rows="3" placeholder="e.g. What are the three primary mission types of electronic warfare?" required></textarea>
-      <button id="btnSubmit" class="btn btn-primary" type="submit">Submit Query</button>
-    </form>
-
-    <div id="consoleLog" class="console-log" aria-live="polite">
-      <div class="empty-state">
-        <h3>No queries logged</h3>
-        <p>Every response is verified against the retrieved pages. If the indexed
-           documents do not cover a question, the console reports that rather
-           than composing an unsupported answer.</p>
+    <div class="sidebar-foot">
+      <div class="conn" id="conn">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="conn-label">Checking engine&hellip;</span>
       </div>
+      <p class="muted tiny">
+        Every figure is read from the local index. Nothing here is simulated.
+      </p>
     </div>
-  </section>
-
-  <!-- ── right: registers ─────────────────────────────────────────── -->
-  <aside class="panel-side">
-
-    <div class="panel">
-      <div class="panel-head"><h2>Document Register</h2></div>
-      <div class="table-wrap">
-        <table class="grid" id="docTable">
-          <thead>
-            <tr><th>Title</th><th class="num">Pages</th><th class="num">Passages</th><th>Status</th><th></th></tr>
-          </thead>
-          <tbody id="docBody">
-            <tr class="grid-empty"><td colspan="5">No documents indexed.</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head"><h2>Intake</h2></div>
-      <div class="intake">
-        <label class="dropzone" id="dropzone">
-          <input type="file" id="fileInput" accept="application/pdf" multiple hidden />
-          <strong>Drop PDFs here</strong>
-          <span>or click to browse · text-based PDFs only</span>
-        </label>
-        <div class="intake-actions">
-          <button id="btnIndex" class="btn btn-primary" disabled>Index uploads</button>
-          <button id="btnRebuild" class="btn">Rebuild samples</button>
-          <button id="btnWipe" class="btn btn-danger">Wipe index</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel">
-      <div class="panel-head"><h2>Briefings</h2></div>
-      <button id="btnBriefings" class="btn btn-block">Generate briefings</button>
-      <div id="briefingList" class="briefings"></div>
-    </div>
-
   </aside>
-</main>
 
-<div id="toastHost" class="toast-host" aria-live="polite"></div>
+  <main class="main">
+    <header class="topbar">
+      <div>
+        <h1 id="view-title">Operations Dashboard</h1>
+        <p class="muted" id="view-sub">Live status across the indexed document corpus.</p>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" id="btn-refresh">Refresh</button>
+        <button class="btn btn-ghost" id="btn-rebuild">Rebuild Index</button>
+        <button class="btn btn-danger-ghost" id="btn-clear">Clear Index</button>
+      </div>
+    </header>
 
+    <!-- ================= DASHBOARD ================= -->
+    <section class="view is-active" id="view-dashboard">
+
+      <div class="kpi-row" id="kpi-row">
+        <button class="kpi is-active" data-filter="all">
+          <span class="kpi-label">Indexed Documents</span>
+          <span class="kpi-value" id="kpi-documents">&mdash;</span>
+          <span class="kpi-foot" id="kpi-documents-foot">in the current index</span>
+        </button>
+        <button class="kpi" data-filter="all">
+          <span class="kpi-label">Passages</span>
+          <span class="kpi-value" id="kpi-passages">&mdash;</span>
+          <span class="kpi-foot">retrievable chunks</span>
+        </button>
+        <button class="kpi" data-filter="all">
+          <span class="kpi-label">Pages</span>
+          <span class="kpi-value" id="kpi-pages">&mdash;</span>
+          <span class="kpi-foot">pages parsed</span>
+        </button>
+        <button class="kpi kpi-good" data-filter="grounded">
+          <span class="kpi-label">Grounded</span>
+          <span class="kpi-value" id="kpi-grounded">0</span>
+          <span class="kpi-foot">answers fully supported</span>
+        </button>
+        <button class="kpi kpi-warn" data-filter="partially_grounded">
+          <span class="kpi-label">Partial</span>
+          <span class="kpi-value" id="kpi-partial">0</span>
+          <span class="kpi-foot">needs review</span>
+        </button>
+        <button class="kpi kpi-bad" data-filter="no_context">
+          <span class="kpi-label">No Context</span>
+          <span class="kpi-value" id="kpi-nocontext">0</span>
+          <span class="kpi-foot">unanswered queries</span>
+        </button>
+      </div>
+      <p class="filter-note" id="filter-note" hidden></p>
+
+      <div class="grid-2">
+        <article class="card">
+          <header class="card-head">
+            <h2>Answer Status Mix</h2>
+            <span class="muted tiny">this session</span>
+          </header>
+          <div class="donut-wrap">
+            <svg id="donut" viewBox="0 0 200 200" role="img" aria-label="Answer status mix"></svg>
+            <ul class="legend" id="donut-legend"></ul>
+          </div>
+        </article>
+
+        <article class="card">
+          <header class="card-head">
+            <h2>Passages per Document</h2>
+            <span class="muted tiny">indexed volume</span>
+          </header>
+          <div id="bars" class="bars"></div>
+        </article>
+      </div>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>Query Console</h2>
+          <span class="muted tiny" id="engine-line">retrieval + grounded synthesis</span>
+        </header>
+        <form id="ask-form" class="ask-form">
+          <input id="ask-input" type="text" autocomplete="off" placeholder="Ask the corpus a question&hellip;" required />
+          <select id="ask-mode" aria-label="Query mode">
+            <option value="answer">Answer</option>
+            <option value="evidence">Evidence only</option>
+          </select>
+          <button class="btn btn-primary" type="submit" id="ask-submit">Run Query</button>
+        </form>
+        <div class="chips" id="suggestions"></div>
+        <div id="ask-result" class="ask-result"></div>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>Query Log</h2>
+          <span class="muted tiny" id="log-count">no queries yet</span>
+        </header>
+        <div class="table-scroll">
+          <table class="grid" id="log-table">
+            <thead>
+              <tr>
+                <th>Question</th><th>Status</th><th>Conf.</th>
+                <th>Sources</th><th>Latency</th>
+              </tr>
+            </thead>
+            <tbody><tr class="empty"><td colspan="5">No queries recorded in this session.</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <!-- ================= DOCUMENTS ================= -->
+    <section class="view" id="view-documents">
+      <article class="card">
+        <header class="card-head">
+          <h2>Intake</h2>
+          <span class="muted tiny">add or re-extract source PDFs</span>
+        </header>
+        <form id="upload-form" class="upload-form">
+          <label class="file-field">
+            <input type="file" id="upload-input" accept="application/pdf" multiple />
+            <span>Choose PDF files&hellip;</span>
+          </label>
+          <button class="btn btn-primary" type="submit">Ingest</button>
+        </form>
+        <p class="muted tiny" id="upload-note">Duplicates are detected by content hash and skipped.</p>
+      </article>
+
+      <article class="card">
+        <header class="card-head">
+          <h2>Document Register</h2>
+          <span class="muted tiny" id="register-count">&mdash;</span>
+        </header>
+        <div class="table-scroll">
+          <table class="grid" id="register-table">
+            <thead>
+              <tr>
+                <th data-sort="title">Document</th>
+                <th data-sort="chunk_count" class="num">Passages</th>
+                <th data-sort="page_count" class="num">Pages</th>
+                <th data-sort="coverage">Coverage</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody><tr class="empty"><td colspan="6">Loading register&hellip;</td></tr></tbody>
+          </table>
+        </div>
+      </article>
+    </section>
+
+    <!-- ================= CORPUS GRID ================= -->
+    <section class="view" id="view-corpus">
+      <article class="card">
+        <header class="card-head">
+          <h2>Corpus Grid</h2>
+          <span class="muted tiny">passage density by document and page</span>
+        </header>
+        <div class="scale-legend" id="scale-legend"></div>
+        <div class="corpus-grid" id="corpus-grid"></div>
+      </article>
+
+      <div class="grid-2">
+        <article class="card">
+          <header class="card-head"><h2>Operations Panel</h2></header>
+          <div class="ops" id="ops-panel">
+            <p class="muted">Select a row in the register to inspect its density profile.</p>
+          </div>
+        </article>
+        <article class="card">
+          <header class="card-head"><h2>Status Key</h2></header>
+          <ul class="key">
+            <li><span class="sw sw-good"></span> Grounded &mdash; every claim carries a citation.</li>
+            <li><span class="sw sw-warn"></span> Partial &mdash; some claims lack support; review before use.</li>
+            <li><span class="sw sw-bad"></span> No context &mdash; corpus holds no answer; nothing was invented.</li>
+            <li><span class="sw sw-info"></span> Fully indexed &mdash; every page produced at least one passage.</li>
+            <li><span class="sw sw-mute"></span> Sparse &mdash; indexed, but low passage density.</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <!-- ================= BRIEFINGS ================= -->
+    <section class="view" id="view-analytics">
+      <article class="card">
+        <header class="card-head">
+          <h2>Document Briefings</h2>
+          <button class="btn btn-ghost" id="btn-briefings">Generate Briefings</button>
+        </header>
+        <div id="briefings" class="briefings">
+          <p class="muted">Summaries are generated from the corpus itself, one per document.</p>
+        </div>
+      </article>
+    </section>
+
+    <!-- ================= CONFIGURATION ================= -->
+    <section class="view" id="view-config">
+      <article class="card">
+        <header class="card-head">
+          <h2>Active Configuration</h2>
+          <span class="muted tiny">secrets are never sent to the browser</span>
+        </header>
+        <pre id="config-json" class="code">&mdash;</pre>
+      </article>
+    </section>
+  </main>
+</div>
+
+<div class="toasts" id="toasts" role="status" aria-live="polite"></div>
 <script src="/static/app.js"></script>
 </body>
 </html>
