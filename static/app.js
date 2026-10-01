@@ -1,15 +1,21 @@
 /* ASTRA INTEL - corpus operations console.
    Vanilla ES2020, no build step and no CDN: charts are hand-drawn SVG so the
-   console still works on an isolated network where Chart.js could not load. */
+   console still works on an isolated network where Chart.js could not load.
+
+   The console has two destinations: Query (chat-first, the operator's main
+   surface) and Documents (intake, register, per-document briefing and
+   extraction QA). Everything reads from the real index. */
 
 const $ = (id) => document.getElementById(id);
 
 const STATUS = {
-  grounded:            { label: "Grounded",      cls: "badge-grounded", color: "#34d399" },
-  partially_grounded:  { label: "Partial",       cls: "badge-warn",     color: "#fbbf24" },
-  no_context:          { label: "No Context",    cls: "badge-no_context", color: "#fb7185" },
-  error:               { label: "Failed",        cls: "badge-error",    color: "#fb7185" },
+  grounded:           { label: "Grounded",   cls: "badge-grounded",     color: "#34d399" },
+  partially_grounded: { label: "Partial",    cls: "badge-partially_grounded", color: "#fbbf24" },
+  no_context:         { label: "No Context", cls: "badge-no_context",  color: "#fb7185" },
+  error:              { label: "Failed",     cls: "badge-error",       color: "#fb7185" },
 };
+
+const STATUS_ORDER = ["grounded", "partially_grounded", "no_context", "error"];
 
 const state = {
   documents: [],
@@ -21,7 +27,14 @@ const state = {
   filter: "all",
   sort: { key: "chunk_count", dir: -1 },
   selected: null,
+  briefingFor: null,
 };
+
+// Upper bound on retained query-log rows, so a long session cannot grow the
+// DOM without limit.
+const MAX_LOG_ROWS = 200;
+
+const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 // ------------------------------------------------------------------ utils --
 
@@ -33,7 +46,7 @@ async function api(path, options = {}) {
       const body = await response.json();
       detail = body.detail || detail;
     } catch (_) { /* non-JSON error body; keep the status text */ }
-    throw new Error(detail);
+    throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
   }
   return response.status === 204 ? null : response.json();
 }
@@ -64,9 +77,19 @@ function badge(status) {
   return `<span class="badge ${meta.cls}">${esc(meta.label)}</span>`;
 }
 
+/** Count query-log rows per status, always returning every known key. */
+function statusCounts() {
+  const counts = { grounded: 0, partially_grounded: 0, no_context: 0, error: 0 };
+  for (const row of state.log) {
+    if (counts[row.status] === undefined) counts[row.status] = 0;
+    counts[row.status] += 1;
+  }
+  return counts;
+}
+
 /* Minimal markdown: the model answers with short prose plus bullet lists, so
-   bold and inline code are the only inline marks worth handling. Escaping
-   happens first, which keeps this safe against injected HTML. */
+   bold, italics and inline code are the only inline marks worth handling.
+   Escaping happens first, which keeps this safe against injected HTML. */
 function md(text) {
   const safe = esc(text || "");
   return safe
@@ -92,27 +115,25 @@ function inline(text) {
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[\s(])_(.+?)_(?=$|[\s.,;:)])/g, "$1<em>$2</em>")
     .replace(/`([^`]+)`/g, "<code>$1</code>")
-    // Citation markers, normalised server-side, rendered as real superscripts.
-    .replace(/ã€\s*S(\d+)\s*ã€‘|\[\s*S(\d+)\s*\]/g,
-      (_, a, b) => `<sup class="cite-ref">S${a || b}</sup>`);
+    // Citation markers, normalised server-side, rendered as superscripts.
+    .replace(/\[?\s*S(\d+)\s*\]?/g, '<sup class="cite-ref">S$1</sup>');
 }
 
 // ------------------------------------------------------------------- donut --
 
+/* The centre figure sits on a near-black panel, so it must be near-white and
+   the empty track a dim slate. Drawing them light-on-light, or dark-on-dark,
+   made the count unreadable in the previous version. */
 function drawDonut() {
   const svg = $("donut");
   const total = state.log.length;
-  const counts = { grounded: 0, partially_grounded: 0, no_context: 0, error: 0 };
-  for (const row of state.log) {
-    if (counts[row.status] === undefined) counts[row.status] = 0;
-    counts[row.status] += 1;
-  }
+  const counts = statusCounts();
 
   if (!total) {
     svg.innerHTML =
-      '<circle cx="100" cy="100" r="70" fill="none" stroke="#edf2f7" stroke-width="26"/>' +
-      '<text x="100" y="97" text-anchor="middle" fill="#718096" font-size="15" font-weight="600">0</text>' +
-      '<text x="100" y="116" text-anchor="middle" fill="#a0aec0" font-size="10">queries</text>';
+      '<circle class="d-track" cx="100" cy="100" r="70" fill="none" stroke-width="26"/>' +
+      '<text class="d-total" x="100" y="99" text-anchor="middle">0</text>' +
+      '<text class="d-cap" x="100" y="117" text-anchor="middle">QUERIES</text>';
     $("donut-legend").innerHTML = "";
     return;
   }
@@ -121,7 +142,7 @@ function drawDonut() {
   const circumference = 2 * Math.PI * radius;
   let offset = 0;
   let rings = "";
-  Object.keys(STATUS).forEach((key) => {
+  STATUS_ORDER.forEach((key) => {
     const count = counts[key] || 0;
     if (!count) return;
     const length = (count / total) * circumference;
@@ -134,10 +155,10 @@ function drawDonut() {
   });
 
   svg.innerHTML = rings +
-    `<text x="100" y="99" text-anchor="middle" fill="#1a202c" font-size="24" font-weight="700">${total}</text>` +
-    `<text x="100" y="117" text-anchor="middle" fill="#718096" font-size="10">queries</text>`;
+    `<text class="d-total" x="100" y="99" text-anchor="middle">${total}</text>` +
+    `<text class="d-cap" x="100" y="117" text-anchor="middle">QUERIES</text>`;
 
-  $("donut-legend").innerHTML = Object.keys(STATUS)
+  $("donut-legend").innerHTML = STATUS_ORDER
     .filter((key) => counts[key])
     .map((key) => `<li><span class="sw" style="background:${STATUS[key].color}"></span>
         ${STATUS[key].label}<span class="n">${counts[key]}</span></li>`)
@@ -155,8 +176,7 @@ function drawBars() {
   const max = Math.max(...rows.map((d) => d.chunk_count), 1);
   $("bars").innerHTML = rows.map((d) => {
     const ratio = d.chunk_count / max;
-    // Same 70%-of-capability read as a bin fill level, but relative to the
-    // largest document rather than an invented capacity.
+    // Relative to the largest document rather than an invented capacity.
     const tier = ratio >= 0.7 ? "t-high" : ratio >= 0.3 ? "t-mid" : "t-low";
     return `<div class="bar-row">
       <span class="name" title="${esc(d.title)}">${esc(d.title)}</span>
@@ -166,14 +186,18 @@ function drawBars() {
   }).join("");
 }
 
-// -------------------------------------------------------------- document status --
+// ------------------------------------------------------------ document status --
 
 function docStatus(doc) {
   if (!doc.chunk_count) return { key: "none", label: "Unindexed", cls: "badge-no_context" };
   const coverage = doc.page_count ? doc.indexed_pages / doc.page_count : 1;
   if (coverage >= 1) return { key: "full", label: "Fully indexed", cls: "badge-grounded" };
-  if (coverage >= 0.6) return { key: "partial", label: "Part indexed", cls: "badge-warn" };
+  if (coverage >= 0.6) return { key: "partial", label: "Part indexed", cls: "badge-partially_grounded" };
   return { key: "sparse", label: "Sparse", cls: "badge-mute" };
+}
+
+function coverageOf(doc) {
+  return doc.page_count ? doc.indexed_pages / doc.page_count : 0;
 }
 
 // ---------------------------------------------------------------- register --
@@ -182,11 +206,7 @@ function drawRegister() {
   const body = $("register-table").tBodies[0];
   const key = state.sort.key;
   const rows = [...state.documents].sort((a, b) => {
-    if (key === "coverage") {
-      const ca = a.page_count ? a.indexed_pages / a.page_count : 0;
-      const cb = b.page_count ? b.indexed_pages / b.page_count : 0;
-      return (ca - cb) * state.sort.dir;
-    }
+    if (key === "coverage") return (coverageOf(a) - coverageOf(b)) * state.sort.dir;
     const av = a[key] ?? 0;
     const bv = b[key] ?? 0;
     if (typeof av === "string") return av.localeCompare(bv) * state.sort.dir;
@@ -203,8 +223,7 @@ function drawRegister() {
 
   body.innerHTML = rows.map((d) => {
     const meta = docStatus(d);
-    const coverage = d.page_count ? d.indexed_pages / d.page_count : 0;
-    const pct = (coverage * 100).toFixed(0);
+    const pct = (coverageOf(d) * 100).toFixed(0);
     return `<tr data-doc="${esc(d.document_id)}" class="${state.selected === d.document_id ? "is-selected" : ""}">
       <td>
         <div class="cell-title">${esc(d.title)}</div>
@@ -219,13 +238,15 @@ function drawRegister() {
         </span>
       </td>
       <td><span class="badge ${meta.cls}">${esc(meta.label)}</span></td>
-      <td class="num">
-        <button class="btn btn-ghost btn-mini btn-danger-ghost" data-remove="${esc(d.document_id)}">Remove</button>
+      <td class="num row-actions">
+        <button class="btn btn-mini btn-ghost" data-brief="${esc(d.document_id)}"
+          title="Summarise this document from the corpus">Brief</button>
+        <button class="btn btn-mini btn-ghost btn-danger" data-remove="${esc(d.document_id)}">Remove</button>
       </td>
     </tr>`;
   }).join("");
 
-  document.querySelectorAll("#register-table thead th[data-sort]").forEach((th) => {
+  $("register-table").querySelectorAll("thead th[data-sort]").forEach((th) => {
     th.classList.toggle("is-sorted", th.dataset.sort === state.sort.key);
   });
 }
@@ -237,19 +258,20 @@ function drawCorpus() {
   const legend = $("scale-legend");
   if (!state.documents.length) {
     grid.innerHTML = '<p class="muted tiny">Nothing indexed yet.</p>';
-    return "";
+    legend.innerHTML = "";
+    drawOps();
+    return;
   }
 
-  // A single scale across every document, so a pale cell in a small document
-  // means the same thing as a pale cell in a large one.
+  // One scale across every document, so a pale cell in a small document means
+  // the same thing as a pale cell in a large one.
   const peak = Math.max(
     1,
     ...state.documents.flatMap((d) => (d.pages || []).map((p) => p.passages)),
   );
-  const steps = [0.08, 0.3, 0.55, 0.78, 1].map((f) => {
-    const mix = Math.round(f * 255);
-    return `<i style="background:rgba(56,189,248,${0.1 + f * 0.85})"></i>`;
-  }).join("");
+  const steps = [0.08, 0.3, 0.55, 0.78, 1]
+    .map((f) => `<i style="background:rgba(56,189,248,${(0.1 + f * 0.85).toFixed(2)})"></i>`)
+    .join("");
   legend.innerHTML = `<span>1 passage</span>
     <span class="scale-steps">${steps}</span>
     <span>${peak} passages / page</span>
@@ -259,7 +281,7 @@ function drawCorpus() {
     const cells = (d.pages || []).map((p) => {
       const alpha = 0.1 + (p.passages / peak) * 0.85;
       const hint = p.passages
-        ? ` data-hint title="${esc(d.title)} p.${p.page} - ${p.passages} passage${p.passages === 1 ? "" : "s"}"`
+        ? ` title="${esc(d.title)} p.${p.page} - ${p.passages} passage${p.passages === 1 ? "" : "s"}"`
         : ` title="${esc(d.title)} p.${p.page} - no passages extracted"`;
       return `<span class="cell" style="background:rgba(56,189,248,${alpha.toFixed(2)})"${hint}></span>`;
     }).join("");
@@ -269,8 +291,6 @@ function drawCorpus() {
     </div>`;
   }).join("");
 }
-
-// ------------------------------------------------------------ ops / config --
 
 function drawOps() {
   const panel = $("ops-panel");
@@ -296,26 +316,56 @@ function drawOps() {
     <h3>Densest pages</h3>
     <ul class="key">${busiest.map((p) => `<li>
         <span class="sw" style="background:rgba(56,189,248,${(0.1 + (p.passages / peak) * 0.85).toFixed(2)})"></span>
-        Page ${p.page}<span style="margin-left:auto;font-variant-numeric:tabular-nums">${p.passages}</span>
+        Page ${p.page}<span class="n">${p.passages}</span>
       </li>`).join("")}</ul>`;
 }
 
-function drawConfig() {
-  $("config-json").textContent = JSON.stringify({
-    runtime: state.runtime,
-    llm_ready: state.llmReady,
-    stats: state.stats,
-    settings: state.settings,
-  }, null, 2);
+// ---------------------------------------------------------------- readouts --
+
+/* The instrument strip and the sidebar status both read from
+   /api/state.runtime, which carries stable snake_case keys. The `settings`
+   block is display-only and its keys are human labels ("LLM model"), so it is
+   never read programmatically. */
+function drawReadouts() {
+  const rt = state.runtime;
+  const chunks = totalChunks();
+  const docs = state.documents.length;
+
+  $("rd-corpus").textContent = docs
+    ? `${docs} doc${docs === 1 ? "" : "s"} · ${chunks} passages`
+    : "empty";
+  $("rd-model").textContent = rt.llm_model || "—";
+  $("rd-provider").textContent = rt.llm_provider || "—";
+  // The model id is long; show the family, not the full repo path.
+  $("rd-embed").textContent = shortModel(rt.embedding_model);
+
+  const conn = $("conn");
+  conn.className = "conn " + (state.llmReady ? "is-live" : "is-off");
+  conn.querySelector(".conn-label").textContent = state.llmReady
+    ? (rt.llm_model || "model ready")
+    : "no model configured";
+
+  $("engine-line").textContent = state.llmReady
+    ? `retrieval + grounded synthesis via ${rt.llm_model}`
+    : "retrieval only - no language model configured";
 }
 
-/* Animate a KPI figure from whatever it currently shows to the new value, so a
-   refresh reads as the console updating rather than silently swapping digits. */
-const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+function shortModel(name) {
+  if (!name) return "—";
+  const tail = String(name).split("/").pop();
+  return tail.length > 26 ? tail.slice(0, 24) + "…" : tail;
+}
 
-// Upper bound on retained query-log rows, so a long session cannot grow the
-// DOM without limit.
-const MAX_LOG_ROWS = 200;
+function totalChunks() {
+  const summed = state.documents.reduce((sum, d) => sum + (d.chunk_count || 0), 0);
+  return state.stats.chunks ?? state.stats.chunk_count ?? summed;
+}
+
+function totalPages() {
+  return state.documents.reduce((sum, d) => sum + (d.page_count || 0), 0);
+}
+
+// ------------------------------------------------------------------- KPIs --
 
 function setNum(id, value) {
   const el = $(id);
@@ -331,31 +381,26 @@ function setNum(id, value) {
   const duration = 620;
   const step = (now) => {
     const t = Math.min(1, (now - started) / duration);
-    // easeOutCubic
-    const eased = 1 - Math.pow(1 - t, 3);
-    el.textContent = Math.round(from + (target - from) * eased);
+    el.textContent = Math.round(from + (target - from) * (1 - Math.pow(1 - t, 3)));
     if (t < 1 && el.dataset.value === String(target)) requestAnimationFrame(step);
   };
   requestAnimationFrame(step);
 }
 
 function drawKpis() {
-  // The store reports `chunks`; fall back to the per-document sum so the KPI
-  // still reads correctly if that key ever changes or is absent.
-  const summed = state.documents.reduce((sum, d) => sum + (d.chunk_count || 0), 0);
-  const chunks = state.stats.chunks ?? state.stats.chunk_count ?? summed;
-  const pages = state.documents.reduce((sum, d) => sum + (d.page_count || 0), 0);
+  const pages = totalPages();
+  const counts = statusCounts();
   setNum("kpi-documents", state.documents.length);
   $("kpi-documents-foot").textContent = `${pages} pages parsed`;
-  setNum("kpi-passages", chunks);
-  setNum("kpi-pages", pages);
-
-  const counts = { grounded: 0, partially_grounded: 0, no_context: 0 };
-  for (const row of state.log) if (counts[row.status] !== undefined) counts[row.status] += 1;
+  setNum("kpi-passages", totalChunks());
   setNum("kpi-grounded", counts.grounded);
   setNum("kpi-partial", counts.partially_grounded);
   setNum("kpi-nocontext", counts.no_context);
+  // Derived, not clickable: mean passages per parsed page.
+  $("kpi-density").textContent = pages ? (totalChunks() / pages).toFixed(1) : "0.0";
 }
+
+// --------------------------------------------------------------------- log --
 
 function drawLog() {
   const body = $("log-table").tBodies[0];
@@ -370,6 +415,7 @@ function drawLog() {
   const note = $("filter-note");
   if (state.filter === "all") {
     note.hidden = true;
+    note.innerHTML = "";
   } else {
     const meta = STATUS[state.filter];
     note.hidden = false;
@@ -396,33 +442,53 @@ function drawLog() {
 
 function setFilter(filter) {
   state.filter = filter;
-  document.querySelectorAll(".kpi").forEach((card) => {
-    card.classList.toggle("is-active",
-      card.dataset.filter === filter || (filter === "all" && card.dataset.filter === "all"));
+  document.querySelectorAll(".tile[data-filter]").forEach((tile) => {
+    tile.classList.toggle("is-active", tile.dataset.filter === filter);
   });
   drawLog();
 }
 
+// -------------------------------------------------------------- rendering --
+
 function renderAll() {
+  drawReadouts();
   drawKpis();
   drawDonut();
   drawBars();
   drawRegister();
   drawCorpus();
-  drawOps();
-  drawConfig();
   drawLog();
 }
 
-// ------------------------------------------------------------------ actions --
+function renderViews() {
+  const current = document.querySelector(".view.is-active");
+  renderAll();
+  if (current) drawOps();
+}
+
+// ------------------------------------------------------------------ answer --
 
 function renderAnswer(payload, question) {
   const box = $("ask-result");
   const citations = payload.citations || [];
+  const confidence = payload.confidence;
+
+  // Confidence as a measured meter; the number alone read as decoration.
+  const meter = confidence === null || confidence === undefined
+    ? `<span class="muted">confidence n/a</span>`
+    : `<span class="meter">
+         <span class="meter-track">
+           <span class="meter-fill m-${
+             payload.status === "grounded" ? "good"
+               : payload.status === "partially_grounded" ? "warn" : "bad"
+           }" style="width:${Math.round(confidence * 100)}%"></span>
+         </span>
+         <span>${confidence.toFixed(2)}</span>
+       </span>`;
+
   const meta = [
     badge(payload.status || "error"),
-    `<span class="muted">confidence ${payload.confidence === null || payload.confidence === undefined
-      ? "n/a" : payload.confidence.toFixed(2)}</span>`,
+    meter,
     payload.latency_ms ? `<span class="muted">${(payload.latency_ms / 1000).toFixed(1)}s</span>` : "",
     payload.llm_model ? `<span class="muted">${esc(payload.llm_model)}</span>` : "",
   ].filter(Boolean).join("");
@@ -454,7 +520,7 @@ function renderAnswer(payload, question) {
   state.log.unshift({
     question,
     status: payload.status || "error",
-    confidence: payload.confidence ?? null,
+    confidence: confidence ?? null,
     sources: new Set(citations.map((c) => c.filename)).size,
     latency_ms: payload.latency_ms || 0,
   });
@@ -464,6 +530,8 @@ function renderAnswer(payload, question) {
   renderAll();
 }
 
+// ----------------------------------------------------------------- loading --
+
 async function loadState() {
   const data = await api("/api/state");
   state.documents = data.documents || [];
@@ -472,21 +540,12 @@ async function loadState() {
   state.stats = data.stats || {};
   state.llmReady = !!data.llm_ready;
 
-  // `runtime` carries the snake_case fields; `settings` is display-only and its
-  // keys are human labels ("LLM model"), so it is never read programmatically.
-  const model = state.runtime.llm_model;
-
-  const conn = $("conn");
-  conn.className = "conn " + (state.llmReady ? "is-live" : "is-off");
-  conn.querySelector(".conn-label").textContent = state.llmReady
-    ? (model || "model ready")
-    : "no model configured";
-
-  $("engine-line").textContent = state.llmReady
-    ? `retrieval + grounded synthesis via ${model}`
-    : "retrieval only - no language model configured";
-
-  renderAll();
+  // A document that was removed underneath an open briefing panel.
+  if (state.briefingFor && !state.documents.some((d) => d.document_id === state.briefingFor)) {
+    $("brief-panel").hidden = true;
+    state.briefingFor = null;
+  }
+  renderViews();
 }
 
 async function loadSuggestions() {
@@ -495,46 +554,205 @@ async function loadSuggestions() {
     $("suggestions").innerHTML = questions.slice(0, 6).map((q) =>
       `<button class="chip" type="button">${esc(q)}</button>`).join("");
     $("suggestions").querySelectorAll(".chip").forEach((chip) => {
-      chip.onclick = () => { $("ask-input").value = chip.textContent; $("ask-input").focus(); };
+      chip.onclick = () => {
+        $("ask-input").value = chip.textContent;
+        $("ask-input").focus();
+      };
     });
   } catch (_) { /* suggestions are optional chrome */ }
 }
 
-// -------------------------------------------------------------------- wiring --
+// ------------------------------------------------------------------ intake --
+
+function intakeStatus(text, kind = "") {
+  const note = $("upload-note");
+  note.textContent = text;
+  note.className = "intake-status " + (kind ? "is-" + kind : "");
+}
+
+/* Preflight the batch against the same limits the server enforces, so an
+   oversized or over-count upload fails in the browser with a specific message
+   instead of round-tripping and returning a bare 400. */
+function preflight(files) {
+  const form = $("upload-form");
+  const maxFiles = Number(form.dataset.maxFiles) || 20;
+  const maxMb = Number(form.dataset.maxMb) || 50;
+  if (files.length > maxFiles) {
+    return `Too many files: ${files.length}. Upload at most ${maxFiles} at once.`;
+  }
+  const oversized = files.filter((f) => f.size > maxMb * 1024 * 1024);
+  if (oversized.length) {
+    return `${oversized[0].name} is larger than the ${maxMb} MB limit.`;
+  }
+  const wrongType = files.filter((f) => f.type && f.type !== "application/pdf");
+  if (wrongType.length) {
+    return `${wrongType[0].name} is not a PDF.`;
+  }
+  return null;
+}
+
+function describeFiles(files) {
+  const mb = files.reduce((sum, f) => sum + f.size, 0) / (1024 * 1024);
+  const size = mb >= 1 ? `${mb.toFixed(1)} MB` : `${Math.round(mb * 1024)} KB`;
+  return `${files.length} file${files.length === 1 ? "" : "s"} · ${size}`;
+}
+
+/* Drag-and-drop onto the existing file input. The input's own files list is
+   assigned rather than tracked separately, so submitting reads one source of
+   truth. */
+function bindDropzone() {
+  const zone = $("dropzone");
+  const input = $("upload-input");
+  let depth = 0;
+
+  const setFiles = (list) => {
+    const transfer = new DataTransfer();
+    for (const file of list) transfer.items.add(file);
+    input.files = transfer.files;
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  zone.addEventListener("dragenter", (event) => {
+    event.preventDefault();
+    depth += 1;
+    zone.classList.add("is-over");
+  });
+  zone.addEventListener("dragover", (event) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  zone.addEventListener("dragleave", () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) zone.classList.remove("is-over");
+  });
+  zone.addEventListener("drop", (event) => {
+    event.preventDefault();
+    depth = 0;
+    zone.classList.remove("is-over");
+    const files = event.dataTransfer.files;
+    if (files.length) setFiles(files);
+  });
+
+  input.addEventListener("change", () => {
+    if (!input.files.length) {
+      $("dz-sub").textContent = "drop PDFs here, or browse";
+      return;
+    }
+    const problem = preflight(input.files);
+    if (problem) {
+      $("dz-sub").textContent = problem;
+      $("dz-sub").style.color = "var(--bad)";
+    } else {
+      $("dz-sub").textContent = describeFiles(input.files);
+      $("dz-sub").style.color = "";
+    }
+  });
+}
+
+// ---------------------------------------------------------------- briefing --
+
+async function briefDocument(documentId) {
+  const panel = $("brief-panel");
+  const body = $("brief-body");
+  const meta = $("brief-meta");
+
+  state.briefingFor = documentId;
+  panel.hidden = false;
+  meta.textContent = "Generating from the corpus...";
+  body.innerHTML = '<span class="briefing-status">' +
+    '<span class="think-pulse" aria-hidden="true"></span> Summarising...</span>';
+
+  try {
+    const { summaries } = await jsonPost(
+      "/api/briefings?document_id=" + encodeURIComponent(documentId), {}
+    );
+    const s = summaries && summaries[0];
+    if (!s) throw new Error("No summary was produced.");
+
+    const provenance = [
+      s.llm_generated ? `generated by ${esc(s.model || "the model")}` : "structural fallback (no model)",
+      s.pages && s.pages.length ? `pages ${s.pages.slice(0, 12).join(", ")}${s.pages.length > 12 ? "…" : ""}` : null,
+    ].filter(Boolean).join(" &middot; ");
+
+    meta.textContent = provenance;
+    body.innerHTML = `
+      <div class="answer-body">${md(s.summary || "")}</div>
+      ${(s.topics || []).length ? `<div class="brief-topics">${
+        s.topics.map((t) => `<span class="topic">${esc(t)}</span>`).join("")
+      }</div>` : ""}`;
+    panel.scrollIntoView({ behavior: reduceMotion.matches ? "auto" : "smooth", block: "nearest" });
+  } catch (err) {
+    meta.textContent = "Unavailable";
+    body.innerHTML = `<p class="muted">${esc(err.message)}</p>`;
+    toast(err.message, "err");
+  }
+}
+
+// ------------------------------------------------------------------ wiring --
+
+function showThinking(on, text) {
+  $("ask-thinking").hidden = !on;
+  if (text) $("think-text").textContent = text;
+}
 
 function bind() {
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.onclick = () => {
-      document.querySelectorAll(".nav-item").forEach((n) => n.classList.remove("is-active"));
+      document.querySelectorAll(".nav-item").forEach((n) => {
+        n.classList.remove("is-active");
+        n.removeAttribute("aria-current");
+      });
       item.classList.add("is-active");
+      item.setAttribute("aria-current", "page");
       const view = item.dataset.view;
       document.querySelectorAll(".view").forEach((v) => v.classList.remove("is-active"));
       $("view-" + view).classList.add("is-active");
       const titles = {
-        dashboard: ["Operations Dashboard", "Live status across the indexed document corpus."],
-        documents: ["Document Register", "Index composition, coverage and intake."],
-        corpus: ["Corpus Grid", "Where the indexed material actually sits, page by page."],
-        analytics: ["Briefings", "Per-document summaries generated from the corpus."],
-        config: ["Configuration", "Runtime settings reported by the backend."],
+        query: ["Query", "Ask the corpus, with every claim cited."],
+        documents: ["Documents", "Intake, the register, and extraction quality."],
       };
       $("view-title").textContent = titles[view][0];
       $("view-sub").textContent = titles[view][1];
+      drawOps();
     };
   });
 
-  document.querySelectorAll(".kpi").forEach((card) => {
-    card.onclick = () => setFilter(card.dataset.filter);
+  document.querySelectorAll(".tile[data-filter]").forEach((tile) => {
+    tile.onclick = () => setFilter(tile.dataset.filter);
   });
 
-  document.querySelectorAll("#register-table thead th[data-sort]").forEach((th) => {
+  // Segmented mode control: a native select here read as a browser dropdown
+  // dropped into a designed panel.
+  $("ask-mode").querySelectorAll(".seg-btn").forEach((btn) => {
+    btn.onclick = () => {
+      const group = $("ask-mode");
+      group.dataset.mode = btn.dataset.mode;
+      group.querySelectorAll(".seg-btn").forEach((b) => {
+        const on = b === btn;
+        b.classList.toggle("is-on", on);
+        b.setAttribute("aria-pressed", String(on));
+      });
+    };
+  });
+
+  $("register-table").querySelectorAll("thead th[data-sort]").forEach((th) => {
     th.onclick = () => {
       const key = th.dataset.sort;
-      state.sort = { key, dir: state.sort.key === key ? -state.sort.dir : (key === "title" ? 1 : -1) };
+      state.sort = {
+        key,
+        dir: state.sort.key === key ? -state.sort.dir : (key === "title" ? 1 : -1),
+      };
       drawRegister();
     };
   });
 
   $("register-table").tBodies[0].addEventListener("click", async (event) => {
+    const briefId = event.target.closest("[data-brief]");
+    if (briefId) {
+      event.stopPropagation();
+      briefDocument(briefId.dataset.brief);
+      return;
+    }
     const removeId = event.target.closest("[data-remove]");
     if (removeId) {
       event.stopPropagation();
@@ -543,6 +761,10 @@ function bind() {
       try {
         await api("/api/documents/" + encodeURIComponent(id), { method: "DELETE" });
         if (state.selected === id) state.selected = null;
+        if (state.briefingFor === id) {
+          $("brief-panel").hidden = true;
+          state.briefingFor = null;
+        }
         toast("Document removed.", "ok");
         await loadState();
       } catch (err) { toast(err.message, "err"); }
@@ -555,16 +777,26 @@ function bind() {
     drawOps();
   });
 
+  $("brief-close").onclick = () => {
+    $("brief-panel").hidden = true;
+    state.briefingFor = null;
+  };
+
   $("ask-form").onsubmit = async (event) => {
     event.preventDefault();
     const input = $("ask-input");
     const question = input.value.trim();
     if (!question) return;
     const submit = $("ask-submit");
+    const mode = $("ask-mode").dataset.mode;
+
     submit.disabled = true;
-    submit.textContent = $("ask-mode").value === "evidence" ? "Retrieving" : "Thinking";
+    $("ask-result").innerHTML = "";
+    showThinking(true, mode === "evidence"
+      ? "Retrieving passages from the index…"
+      : "Retrieving passages, then synthesising a cited answer…");
+
     try {
-      const mode = $("ask-mode").value;
       const payload = mode === "evidence"
         ? await jsonPost("/api/evidence", { question })
         : await jsonPost("/api/ask", { question });
@@ -587,7 +819,7 @@ function bind() {
       toast(err.message, "err");
     } finally {
       submit.disabled = false;
-      submit.textContent = "Run Query";
+      showThinking(false);
     }
   };
 
@@ -595,26 +827,46 @@ function bind() {
     event.preventDefault();
     const input = $("upload-input");
     if (!input.files.length) { toast("Choose at least one PDF first.", "err"); return; }
+
+    const problem = preflight(input.files);
+    if (problem) {
+      intakeStatus(problem, "err");
+      toast(problem, "err");
+      return;
+    }
+
+    const submit = $("upload-submit");
+    submit.disabled = true;
+    intakeStatus("Ingesting " + describeFiles(input.files) + "…", "busy");
+
     const form = new FormData();
     for (const file of input.files) form.append("files", file);
-    const note = $("upload-note");
-    note.textContent = "Ingesting " + input.files.length + " file(s)...";
     try {
       const result = await api("/api/upload", { method: "POST", body: form });
       const added = result.added ? result.added.length : 0;
-      note.textContent = `Added ${added}, skipped ${(result.duplicates || []).length} duplicate(s).`;
+      const skipped = (result.duplicates || []).length;
+      intakeStatus(
+        `Indexed ${added} new document${added === 1 ? "" : "s"}; skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}.`,
+        "ok"
+      );
       toast(`Indexed ${added} new document(s).`, "ok");
       input.value = "";
+      $("dz-sub").textContent = "drop PDFs here, or browse";
+      $("dz-sub").style.color = "";
       await loadState();
     } catch (err) {
-      // A per-file failure surfaces as a 400 now, so it has to be shown: the
-      // previous code reported success here while the broken PDF vanished.
-      note.textContent = err.message;
+      // A per-file failure surfaces as a 400 now, so it has to be shown.
+      intakeStatus(err.message, "err");
       toast(err.message, "err");
+    } finally {
+      submit.disabled = false;
     }
   };
 
-  $("btn-refresh").onclick = () => loadState().then(() => toast("State refreshed.")).catch((e) => toast(e.message, "err"));
+  bindDropzone();
+
+  $("btn-refresh").onclick = () =>
+    loadState().then(() => toast("State refreshed.")).catch((e) => toast(e.message, "err"));
 
   $("btn-rebuild").onclick = async () => {
     if (!confirm(
@@ -625,6 +877,8 @@ function bind() {
       const result = await jsonPost("/api/rebuild?confirm=rebuild", {});
       toast(`Rebuilt: ${result.chunk_count} passages.`, "ok");
       state.selected = null;
+      $("brief-panel").hidden = true;
+      state.briefingFor = null;
       await loadState();
     } catch (err) { toast(err.message, "err"); }
   };
@@ -634,39 +888,34 @@ function bind() {
     try {
       await jsonPost("/api/clear?confirm=clear", {});
       state.selected = null;
+      $("brief-panel").hidden = true;
+      state.briefingFor = null;
       toast("Index cleared.", "ok");
       await loadState();
     } catch (err) { toast(err.message, "err"); }
   };
 
-  $("btn-briefings").onclick = async () => {
-    const button = $("btn-briefings");
-    button.disabled = true;
-    button.textContent = "Generating...";
-    $("briefings").innerHTML = '<p class="muted">Summarising each document from the corpus...</p>';
-    try {
-      const { summaries } = await jsonPost("/api/briefings", {});
-      $("briefings").innerHTML = summaries.map((s) => `<div class="brief">
-        <h3>${esc(s.title || s.filename || "Document")}</h3>
-        <div class="body">${md(s.summary || s.text || "")}</div>
-      </div>`).join("") || '<p class="muted">No summaries were produced.</p>';
-    } catch (err) {
-      $("briefings").innerHTML = `<p class="muted">Briefings unavailable: ${esc(err.message)}</p>`;
-    } finally {
-      button.disabled = false;
-      button.textContent = "Generate Briefings";
+  // Enter submits, Escape clears the field.
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "/" && document.activeElement !== $("ask-input")) {
+      const active = document.activeElement;
+      const typing = active && /^(INPUT|TEXTAREA|SELECT)$/.test(active.tagName);
+      if (!typing) {
+        event.preventDefault();
+        $("ask-input").focus();
+      }
     }
-  };
+  });
 }
 
 /* Pointer parallax: nudge the aurora orbs against the cursor. The CSS keyframes
-   own the drift, so this writes a separate custom property and composes with it
-   rather than fighting the animation. */
+   own the drift, so this writes the `translate` property and composes with
+   them rather than fighting the animation. */
 function startAmbient() {
   if (reduceMotion.matches) return;
   const orbs = [...document.querySelectorAll(".aurora .orb")];
   if (!orbs.length) return;
-  const strengths = [14, -18, 10, -8, 12];
+  const strengths = [14, -18, 10];
 
   let frame = null;
   let px = 0, py = 0, cx = 0, cy = 0;

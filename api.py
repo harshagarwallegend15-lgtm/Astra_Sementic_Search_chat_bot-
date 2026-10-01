@@ -413,16 +413,23 @@ def remove(document_id: str) -> dict[str, Any]:
 
 
 @app.post("/api/briefings")
-def briefings() -> dict[str, Any]:
+def briefings(document_id: str | None = None) -> dict[str, Any]:
+    """Summarise the corpus, or one document when ``document_id`` is given."""
     pipeline = get_pipeline()
     if pipeline.llm() is None:
         raise HTTPException(status_code=503, detail="No language model is configured.")
     try:
-        return {"summaries": _as_dict(pipeline.summaries())}
+        summaries = pipeline.summaries(document_id=document_id)
     except AstraIntelError as exc:
         raise HTTPException(status_code=400, detail=exc.user_message) from exc
     except Exception as exc:  # noqa: BLE001
         raise _internal_failure("Generating briefings", exc) from exc
+    if document_id is not None and not summaries:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No indexed document has the id {document_id!r}.",
+        )
+    return {"summaries": _as_dict(summaries)}
 
 
 @app.get("/api/health")

@@ -301,7 +301,13 @@ class AstraPipeline:
         self.ensure_ready()
         return Answerer(self.retriever, self.llm() if llm is None else llm, self.settings)
 
-    def summaries(self, llm=None):
+    def summaries(self, llm=None, document_id: str | None = None):
+        """Summarise every indexed document, or just one.
+
+        ``document_id`` lets the console brief a single document from its row
+        instead of regenerating the whole set. Without it an operator wanting
+        one summary pays for all of them, and waits for all of them.
+        """
         from .summarizer import summarise_documents
 
         self.ensure_ready()
@@ -309,6 +315,8 @@ class AstraPipeline:
             (meta.document_id, meta.title, self.chunks_for(meta.document_id))
             for meta in self.documents()
         ]
+        if document_id is not None:
+            payload = [row for row in payload if row[0] == document_id]
         return summarise_documents(
             self.settings, self.llm() if llm is None else llm, payload
         )

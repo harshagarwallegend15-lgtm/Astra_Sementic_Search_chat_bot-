@@ -231,6 +231,44 @@ class TestIntake:
         finally:
             client.api._pipeline.llm = original
 
+    def test_briefings_can_target_a_single_document(self, client, monkeypatch):
+        """Briefing one row must not regenerate the whole set.
+
+        The console briefs from the register row that was clicked, so an
+        operator wanting one summary pays for one summary.
+        """
+        from src.models import DocumentSummary
+
+        asked: list[str | None] = []
+
+        def fake(self, llm=None, document_id=None):
+            asked.append(document_id)
+            return [DocumentSummary(
+                document_id=document_id or "all",
+                title="Stub",
+                summary="Stub summary.",
+                topics=["stubs"],
+                llm_generated=True,
+                model="stub-model",
+            )]
+
+        monkeypatch.setattr(client.api.AstraPipeline, "summaries", fake)
+
+        document_id = client.get("/api/state").json()["documents"][0]["document_id"]
+        payload = client.post(f"/api/briefings?document_id={document_id}").json()
+
+        assert asked == [document_id]
+        assert payload["summaries"][0]["document_id"] == document_id
+
+    def test_briefing_an_unknown_document_is_a_404(self, client, monkeypatch):
+        monkeypatch.setattr(
+            client.api.AstraPipeline, "summaries",
+            lambda self, llm=None, document_id=None: [],
+        )
+        response = client.post("/api/briefings?document_id=nope")
+        assert response.status_code == 404
+        assert "nope" in response.json()["detail"]
+
     def test_rebuild_is_refused_without_explicit_confirmation(self, client):
         """Rebuild discards every indexed document, so it must be deliberate.
 

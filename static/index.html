@@ -4,20 +4,20 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>ASTRA INTEL &middot; Corpus Operations</title>
+<meta name="color-scheme" content="dark" />
 <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
 
-<!-- Ambient aurora mesh: fixed, blurred, slowly drifting. Purely decorative and
-     hidden from assistive tech; animation is disabled under reduced motion. -->
+<!-- Ambient depth: three slow colour fields and a faint measurement grid
+     behind machined panels. Purely decorative, hidden from assistive tech,
+     and fully static under prefers-reduced-motion. -->
 <div class="aurora" aria-hidden="true">
   <span class="orb orb-1"></span>
   <span class="orb orb-2"></span>
   <span class="orb orb-3"></span>
-  <span class="orb orb-4"></span>
-  <span class="orb orb-5"></span>
   <span class="grid-veil"></span>
-  <span class="scanline"></span>
+  <span class="sweep"></span>
 </div>
 
 <div class="shell">
@@ -25,36 +25,45 @@
   <aside class="sidebar">
     <div class="brand">
       <span class="brand-mark" aria-hidden="true"></span>
-      <div>
+      <div class="brand-text">
         <strong>ASTRA INTEL</strong>
         <small>Corpus Operations</small>
       </div>
     </div>
 
+    <!-- Two destinations, both of which the operator actually works in.
+         Configuration was dropped: the values that matter are readouts, and a
+         raw settings dump is developer chrome. The extraction heatmap and the
+         briefings were folded into Documents, where the data they describe
+         lives, instead of each earning a tab of its own. -->
     <nav class="nav" aria-label="Sections">
-      <button class="nav-item is-active" data-view="dashboard">
-        <span class="nav-ico" aria-hidden="true">&#9632;</span> Dashboard
+      <button class="nav-item is-active" data-view="query" aria-current="page">
+        <span class="nav-rail" aria-hidden="true"></span>
+        <span class="nav-ico" aria-hidden="true"></span> Query
       </button>
       <button class="nav-item" data-view="documents">
-        <span class="nav-ico" aria-hidden="true">&#9635;</span> Documents
-      </button>
-      <button class="nav-item" data-view="corpus">
-        <span class="nav-ico" aria-hidden="true">&#9638;</span> Corpus Grid
-      </button>
-      <button class="nav-item" data-view="analytics">
-        <span class="nav-ico" aria-hidden="true">&#9707;</span> Briefings
-      </button>
-      <button class="nav-item" data-view="config">
-        <span class="nav-ico" aria-hidden="true">&#9881;</span> Configuration
+        <span class="nav-rail" aria-hidden="true"></span>
+        <span class="nav-ico" aria-hidden="true"></span> Documents
       </button>
     </nav>
 
     <div class="sidebar-foot">
       <div class="conn" id="conn">
-        <span class="dot" aria-hidden="true"></span>
+        <span class="pulse-dot" aria-hidden="true"></span>
         <span class="conn-label">Checking engine&hellip;</span>
       </div>
-      <p class="muted tiny">
+
+      <!-- Destructive maintenance lives here rather than in the topbar, so it
+           is never one careless click from the primary action. -->
+      <div class="maint">
+        <span class="maint-label">Maintenance</span>
+        <div class="maint-actions">
+          <button class="btn btn-mini btn-ghost" id="btn-rebuild">Rebuild</button>
+          <button class="btn btn-mini btn-ghost btn-danger" id="btn-clear">Clear</button>
+        </div>
+      </div>
+
+      <p class="sidebar-note">
         Every figure is read from the local index. Nothing here is simulated.
       </p>
     </div>
@@ -62,130 +71,190 @@
 
   <main class="main">
     <header class="topbar">
-      <div>
-        <h1 id="view-title">Operations Dashboard</h1>
-        <p class="muted" id="view-sub">Live status across the indexed document corpus.</p>
+      <div class="topbar-title">
+        <h1 id="view-title">Query</h1>
+        <p class="muted" id="view-sub">Ask the corpus, with every claim cited.</p>
       </div>
       <div class="topbar-actions">
-        <button class="btn btn-ghost" id="btn-refresh">Refresh</button>
-        <button class="btn btn-ghost" id="btn-rebuild">Rebuild Index</button>
-        <button class="btn btn-danger-ghost" id="btn-clear">Clear Index</button>
+        <button class="btn btn-ghost" id="btn-refresh" title="Re-read the backend state">
+          <span class="btn-ico" aria-hidden="true"></span>Refresh
+        </button>
       </div>
     </header>
 
-    <!-- ================= DASHBOARD ================= -->
-    <section class="view is-active" id="view-dashboard">
+    <!-- Live instrument readout. Every value is real and comes from
+         /api/state.runtime; nothing here is placeholder text. -->
+    <div class="readouts" id="readouts">
+      <span class="readout">
+        <span class="rd-key">Corpus</span>
+        <span class="rd-val" id="rd-corpus">&mdash;</span>
+      </span>
+      <span class="readout">
+        <span class="rd-key">Model</span>
+        <span class="rd-val" id="rd-model">&mdash;</span>
+      </span>
+      <span class="readout">
+        <span class="rd-key">Provider</span>
+        <span class="rd-val" id="rd-provider">&mdash;</span>
+      </span>
+      <span class="readout">
+        <span class="rd-key">Embeddings</span>
+        <span class="rd-val" id="rd-embed">&mdash;</span>
+      </span>
+    </div>
 
-      <div class="kpi-row" id="kpi-row">
-        <button class="kpi is-active" data-filter="all">
-          <span class="kpi-label">Indexed Documents</span>
-          <span class="kpi-value" id="kpi-documents">&mdash;</span>
-          <span class="kpi-foot" id="kpi-documents-foot">in the current index</span>
-        </button>
-        <button class="kpi" data-filter="all">
-          <span class="kpi-label">Passages</span>
-          <span class="kpi-value" id="kpi-passages">&mdash;</span>
-          <span class="kpi-foot">retrievable chunks</span>
-        </button>
-        <button class="kpi" data-filter="all">
-          <span class="kpi-label">Pages</span>
-          <span class="kpi-value" id="kpi-pages">&mdash;</span>
-          <span class="kpi-foot">pages parsed</span>
-        </button>
-        <button class="kpi kpi-good" data-filter="grounded">
-          <span class="kpi-label">Grounded</span>
-          <span class="kpi-value" id="kpi-grounded">0</span>
-          <span class="kpi-foot">answers fully supported</span>
-        </button>
-        <button class="kpi kpi-warn" data-filter="partially_grounded">
-          <span class="kpi-label">Partial</span>
-          <span class="kpi-value" id="kpi-partial">0</span>
-          <span class="kpi-foot">needs review</span>
-        </button>
-        <button class="kpi kpi-bad" data-filter="no_context">
-          <span class="kpi-label">No Context</span>
-          <span class="kpi-value" id="kpi-nocontext">0</span>
-          <span class="kpi-foot">unanswered queries</span>
-        </button>
-      </div>
-      <p class="filter-note" id="filter-note" hidden></p>
+    <!-- ============================== QUERY ============================== -->
+    <section class="view is-active" id="view-query">
+      <div class="deck">
 
-      <div class="grid-2">
-        <article class="card">
-          <header class="card-head">
-            <h2>Answer Status Mix</h2>
-            <span class="muted tiny">this session</span>
-          </header>
-          <div class="donut-wrap">
-            <svg id="donut" viewBox="0 0 200 200" role="img" aria-label="Answer status mix"></svg>
-            <ul class="legend" id="donut-legend"></ul>
-          </div>
-        </article>
+        <div class="deck-main">
+          <article class="panel panel-hero ticked">
+            <header class="panel-head">
+              <div>
+                <h2>Query Console</h2>
+                <p class="muted tiny" id="engine-line">retrieval + grounded synthesis</p>
+              </div>
+              <div class="seg" id="ask-mode" data-mode="answer" role="group" aria-label="Query mode">
+                <button type="button" class="seg-btn is-on" data-mode="answer" aria-pressed="true">Answer</button>
+                <button type="button" class="seg-btn" data-mode="evidence" aria-pressed="false">Evidence</button>
+              </div>
+            </header>
 
-        <article class="card">
-          <header class="card-head">
-            <h2>Passages per Document</h2>
-            <span class="muted tiny">indexed volume</span>
-          </header>
-          <div id="bars" class="bars"></div>
-        </article>
-      </div>
+            <form id="ask-form" class="ask-form" autocomplete="off">
+              <div class="ask-field">
+                <input id="ask-input" type="text" placeholder="Ask the corpus a question&hellip;"
+                       aria-label="Question" />
+                <button class="send" type="submit" id="ask-submit">
+                  <span class="send-label">Run Query</span>
+                  <span class="send-key" aria-hidden="true">&#9166;</span>
+                </button>
+              </div>
+            </form>
 
-      <article class="card">
-        <header class="card-head">
-          <h2>Query Console</h2>
-          <span class="muted tiny" id="engine-line">retrieval + grounded synthesis</span>
-        </header>
-        <form id="ask-form" class="ask-form">
-          <input id="ask-input" type="text" autocomplete="off" placeholder="Ask the corpus a question&hellip;" required />
-          <select id="ask-mode" aria-label="Query mode">
-            <option value="answer">Answer</option>
-            <option value="evidence">Evidence only</option>
-          </select>
-          <button class="btn btn-primary" type="submit" id="ask-submit">Run Query</button>
-        </form>
-        <div class="chips" id="suggestions"></div>
-        <div id="ask-result" class="ask-result"></div>
-      </article>
+            <div class="chips" id="suggestions"></div>
 
-      <article class="card">
-        <header class="card-head">
-          <h2>Query Log</h2>
-          <span class="muted tiny" id="log-count">no queries yet</span>
-        </header>
-        <div class="table-scroll">
-          <table class="grid" id="log-table">
-            <thead>
-              <tr>
-                <th>Question</th><th>Status</th><th>Conf.</th>
-                <th>Sources</th><th>Latency</th>
-              </tr>
-            </thead>
-            <tbody><tr class="empty"><td colspan="5">No queries recorded in this session.</td></tr></tbody>
-          </table>
+            <div class="thinking" id="ask-thinking" hidden>
+              <span class="think-bar" aria-hidden="true"><i></i></span>
+              <span class="think-row">
+                <span class="think-pulse" aria-hidden="true"></span>
+                <span id="think-text">Retrieving passages from the index&hellip;</span>
+              </span>
+            </div>
+
+            <div id="ask-result" class="ask-result"></div>
+          </article>
+
+          <article class="panel">
+            <header class="panel-head">
+              <h2>Query Log</h2>
+              <span class="muted tiny" id="log-count">no queries yet</span>
+            </header>
+            <p class="filter-note" id="filter-note" hidden></p>
+            <div class="table-scroll">
+              <table class="grid" id="log-table">
+                <thead>
+                  <tr>
+                    <th>Question</th><th>Status</th><th>Conf.</th>
+                    <th>Sources</th><th>Latency</th>
+                  </tr>
+                </thead>
+                <tbody><tr class="empty"><td colspan="5">No queries recorded in this session.</td></tr></tbody>
+              </table>
+            </div>
+          </article>
         </div>
-      </article>
+
+        <div class="deck-rail">
+          <article class="panel">
+            <header class="panel-head">
+              <h2>Corpus Telemetry</h2>
+              <span class="muted tiny">click to filter the log</span>
+            </header>
+
+            <div class="tiles" id="kpi-row">
+              <button class="tile is-active" data-filter="all">
+                <span class="tile-label">Documents</span>
+                <span class="tile-value" id="kpi-documents">&mdash;</span>
+                <span class="tile-foot" id="kpi-documents-foot">indexed</span>
+              </button>
+              <button class="tile" data-filter="all">
+                <span class="tile-label">Passages</span>
+                <span class="tile-value" id="kpi-passages">&mdash;</span>
+                <span class="tile-foot">retrievable chunks</span>
+              </button>
+              <button class="tile t-good" data-filter="grounded">
+                <span class="tile-label">Grounded</span>
+                <span class="tile-value" id="kpi-grounded">0</span>
+                <span class="tile-foot">fully supported</span>
+              </button>
+              <button class="tile t-warn" data-filter="partially_grounded">
+                <span class="tile-label">Partial</span>
+                <span class="tile-value" id="kpi-partial">0</span>
+                <span class="tile-foot">needs review</span>
+              </button>
+              <button class="tile t-bad" data-filter="no_context">
+                <span class="tile-label">No Context</span>
+                <span class="tile-value" id="kpi-nocontext">0</span>
+                <span class="tile-foot">unanswered</span>
+              </button>
+              <div class="tile tile-static" title="Passages divided by pages parsed">
+                <span class="tile-label">Density</span>
+                <span class="tile-value" id="kpi-density">&mdash;</span>
+                <span class="tile-foot">passages / page</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <header class="panel-head">
+              <h2>Answer Integrity</h2>
+              <span class="muted tiny">this session</span>
+            </header>
+            <div class="donut-wrap">
+              <svg id="donut" viewBox="0 0 200 200" role="img"
+                   aria-label="Distribution of answer statuses this session"></svg>
+              <ul class="legend" id="donut-legend"></ul>
+            </div>
+          </article>
+
+          <article class="panel">
+            <header class="panel-head">
+              <h2>Volume by Document</h2>
+              <span class="muted tiny">indexed passages</span>
+            </header>
+            <div id="bars" class="bars"></div>
+          </article>
+        </div>
+
+      </div>
     </section>
 
-    <!-- ================= DOCUMENTS ================= -->
+    <!-- ============================ DOCUMENTS ============================ -->
     <section class="view" id="view-documents">
-      <article class="card">
-        <header class="card-head">
-          <h2>Intake</h2>
-          <span class="muted tiny">add or re-extract source PDFs</span>
+
+      <article class="panel">
+        <header class="panel-head">
+          <div>
+            <h2>Intake</h2>
+            <p class="muted tiny">drop PDFs here or browse. Duplicates are detected by content hash and skipped.</p>
+          </div>
         </header>
-        <form id="upload-form" class="upload-form">
-          <label class="file-field">
+        <form id="upload-form" class="upload-form" data-max-files="20" data-max-mb="50">
+          <label class="dropzone" id="dropzone">
             <input type="file" id="upload-input" accept="application/pdf" multiple />
-            <span>Choose PDF files&hellip;</span>
+            <span class="dz-ico" aria-hidden="true"></span>
+            <span class="dz-copy">
+              <span class="dz-main">Drop PDF files or <em>browse</em></span>
+              <span class="dz-sub" id="dz-sub">up to 20 files &middot; 50 MB total</span>
+            </span>
           </label>
-          <button class="btn btn-primary" type="submit">Ingest</button>
+          <button class="btn btn-primary" type="submit" id="upload-submit">Ingest</button>
         </form>
-        <p class="muted tiny" id="upload-note">Duplicates are detected by content hash and skipped.</p>
+        <div class="intake-status" id="upload-note">No batch ingested in this session.</div>
       </article>
 
-      <article class="card">
-        <header class="card-head">
+      <article class="panel">
+        <header class="panel-head">
           <h2>Document Register</h2>
           <span class="muted tiny" id="register-count">&mdash;</span>
         </header>
@@ -198,68 +267,43 @@
                 <th data-sort="page_count" class="num">Pages</th>
                 <th data-sort="coverage">Coverage</th>
                 <th>Status</th>
-                <th></th>
+                <th class="num">Actions</th>
               </tr>
             </thead>
             <tbody><tr class="empty"><td colspan="6">Loading register&hellip;</td></tr></tbody>
           </table>
         </div>
       </article>
-    </section>
 
-    <!-- ================= CORPUS GRID ================= -->
-    <section class="view" id="view-corpus">
-      <article class="card">
-        <header class="card-head">
-          <h2>Corpus Grid</h2>
-          <span class="muted tiny">passage density by document and page</span>
+      <!-- Per-document briefing, inline. The old Briefings tab regenerated
+           every document for one button; this briefs the row you clicked. -->
+      <article class="panel" id="brief-panel" hidden>
+        <header class="panel-head">
+          <div>
+            <h2>Document Briefing</h2>
+            <p class="muted tiny" id="brief-meta">&mdash;</p>
+          </div>
+          <button class="btn btn-mini btn-ghost" id="brief-close">Close</button>
         </header>
-        <div class="scale-legend" id="scale-legend"></div>
-        <div class="corpus-grid" id="corpus-grid"></div>
+        <div class="brief" id="brief-body"></div>
       </article>
 
-      <div class="grid-2">
-        <article class="card">
-          <header class="card-head"><h2>Operations Panel</h2></header>
+      <!-- Extraction QA, collapsed by default: useful when verifying an
+           ingest, not something to read on every visit. -->
+      <article class="panel">
+        <details class="disclose">
+          <summary class="panel-head">
+            <span>Extraction Quality</span>
+            <span class="muted tiny">passages per page &middot; click to expand</span>
+          </summary>
+          <div class="scale-legend" id="scale-legend"></div>
+          <div class="corpus-grid" id="corpus-grid"></div>
           <div class="ops" id="ops-panel">
             <p class="muted">Select a row in the register to inspect its density profile.</p>
           </div>
-        </article>
-        <article class="card">
-          <header class="card-head"><h2>Status Key</h2></header>
-          <ul class="key">
-            <li><span class="sw sw-good"></span> Grounded &mdash; every claim carries a citation.</li>
-            <li><span class="sw sw-warn"></span> Partial &mdash; some claims lack support; review before use.</li>
-            <li><span class="sw sw-bad"></span> No context &mdash; corpus holds no answer; nothing was invented.</li>
-            <li><span class="sw sw-info"></span> Fully indexed &mdash; every page produced at least one passage.</li>
-            <li><span class="sw sw-mute"></span> Sparse &mdash; indexed, but low passage density.</li>
-          </ul>
-        </article>
-      </div>
-    </section>
-
-    <!-- ================= BRIEFINGS ================= -->
-    <section class="view" id="view-analytics">
-      <article class="card">
-        <header class="card-head">
-          <h2>Document Briefings</h2>
-          <button class="btn btn-ghost" id="btn-briefings">Generate Briefings</button>
-        </header>
-        <div id="briefings" class="briefings">
-          <p class="muted">Summaries are generated from the corpus itself, one per document.</p>
-        </div>
+        </details>
       </article>
-    </section>
 
-    <!-- ================= CONFIGURATION ================= -->
-    <section class="view" id="view-config">
-      <article class="card">
-        <header class="card-head">
-          <h2>Active Configuration</h2>
-          <span class="muted tiny">secrets are never sent to the browser</span>
-        </header>
-        <pre id="config-json" class="code">&mdash;</pre>
-      </article>
     </section>
   </main>
 </div>
